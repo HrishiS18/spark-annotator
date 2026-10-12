@@ -1,0 +1,1 @@
+anthropic>=1.0  # optional: only needed for the LLM judge and the in-browser AI chat partner

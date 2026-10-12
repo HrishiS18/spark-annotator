@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spark Session</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="side">
+    <div class="side-brand" id="brand"></div>
+    <div class="side-label">Your session</div>
+    <nav class="steps" id="steps"></nav>
+    <div class="task-card" id="task"></div>
+    <div class="side-foot" id="foot"></div>
+  </aside>
+  <main class="main">
+    <div class="topbar">
+      <span id="top-ic"></span><span class="topbar-title" id="top-title"></span>
+      <div class="topbar-right" id="top-actions"></div>
+    </div>
+    <div id="banner"></div>
+    <div class="content" id="content"></div>
+    <div class="composer-wrap hidden" id="composer-wrap">
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="Ask a follow-up…" aria-label="Message"></textarea>
+        <button class="btn btn-primary btn-sm" type="submit" id="send">Send</button>
+      </form>
+      <div class="hint"><span><kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span>Something shift your thinking? Tap <b>Mark moment</b> or press <kbd>Ctrl</kbd>+<kbd>M</kbd></span></div>
+    </div>
+  </main>
+</div>
+<button class="mark-fab hidden" id="fab" aria-label="Mark this moment"><span id="fab-ic"></span>Mark moment <span class="count" id="fab-count">0</span></button>
+<script type="module" src="/static/session.js"></script>
+</body>
+</html>

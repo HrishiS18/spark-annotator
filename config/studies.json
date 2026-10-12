@@ -1,0 +1,51 @@
+{
+  "_comment": "Study templates. Each session picks one study + one prompt (dilemma/task) + a persona + a condition. Phase durations are in minutes; timers are soft (participants are told time is up but are not cut off) unless enforce_timers is true. Prompts here are written for this platform; use tools/import_dilemmas.py to load Scruples / Moral Dilemma Dataset / r/Advice items.",
+  "studies": [
+    {
+      "key": "dilemma",
+      "label": "Moral dilemma",
+      "default_persona": "partner",
+      "phases": {"pre": 10, "chat": 20, "post": 10},
+      "enforce_timers": false,
+      "show_candidates_in_review": true,
+      "pre_instructions": "Read the question below. Without any AI help, write your current position and the main reasons for it. There are no right answers; we're interested in how you think.",
+      "chat_instructions": "Talk the question through with your partner. Whenever something shifts your thinking, tap Mark moment (or press Ctrl+M). You don't need to explain it now.",
+      "post_instructions": "Without AI help, write your final position and reasons. It's fine if it's unchanged.",
+      "prompts": [
+        {"id": "d-promise", "title": "Breaking a promise", "text": "Is it ever right to break a serious promise in order to prevent a smaller harm to someone else? Where would you draw the line?"},
+        {"id": "d-giving", "title": "Obligations of the wealthy", "text": "Do people who are comfortably well-off have a moral obligation to give away a substantial share of their income to people in extreme poverty, or is it praiseworthy but optional?"},
+        {"id": "d-white-lie", "title": "Kind lies", "text": "Is it acceptable to lie to protect someone's feelings, for example about a gift, their work, or a decision they can no longer change?"},
+        {"id": "d-moral-luck", "title": "Moral luck", "text": "Two people drive home equally drunk. One hits a pedestrian; the other gets home safely by luck. Are they equally blameworthy? What does your answer imply about how we should judge people?"},
+        {"id": "d-partiality", "title": "Family vs strangers", "text": "Do we owe more to our family and friends than to strangers? If so, how much more, and does that ever justify ignoring the greater needs of strangers?"},
+        {"id": "d-ai-art", "title": "Credit for AI-assisted work", "text": "If someone produces an essay, artwork or proof with heavy AI assistance, how much credit do they deserve for it, and what, if anything, do they owe to others about how it was made?"}
+      ]
+    },
+    {
+      "key": "trading",
+      "label": "Trading strategy",
+      "default_persona": "trading",
+      "phases": {"pre": 10, "chat": 30, "post": 10},
+      "enforce_timers": false,
+      "show_candidates_in_review": true,
+      "pre_instructions": "Without AI help, write down the market you want to trade, what you know about it that others might not, and your initial idea for a strategy.",
+      "chat_instructions": "Work with the AI to develop a concrete strategy. Whenever something gives you an idea or changes your plan, tap Mark moment (or press Ctrl+M).",
+      "post_instructions": "Without AI help, write your final strategy: instruments, entry/exit rules, position sizing, risk limits and time horizon, plus why you believe it will work.",
+      "prompts": [
+        {"id": "t-open", "title": "Trade what you know", "text": "You have a fixed budget to trade in a market of your choice. Develop a concrete strategy you would actually run, ideally drawing on something you know well (a hobby, industry, region, or technology)."}
+      ]
+    },
+    {
+      "key": "agentic",
+      "label": "External agent session (Claude Code / Codex)",
+      "default_persona": "partner",
+      "phases": {"chat": 30},
+      "enforce_timers": false,
+      "show_candidates_in_review": true,
+      "external": true,
+      "chat_instructions": "Work in your coding agent as usual. Keep the small Spark Marker window open beside it and tap it (or press Ctrl+M while it's focused) whenever something shifts your thinking. Afterwards, export your agent logs and upload them here.",
+      "prompts": [
+        {"id": "a-free", "title": "Your own task", "text": "Work on your own task with your coding agent."}
+      ]
+    }
+  ]
+}

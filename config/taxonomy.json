@@ -1,0 +1,86 @@
+{
+  "_comment": "Single source of truth for spark types. `participant` is the plain-language phrasing shown in the Mark-moment popover; `label` and `definition` are for researchers and the LLM detector.",
+  "types": [
+    {
+      "key": "additive",
+      "label": "Additive",
+      "participant": "This brought up something I hadn't considered",
+      "icon": "plus",
+      "definition": "New information, option, stakeholder, consequence, tool or resource enters the participant's search space.",
+      "cues": "Participant picks up a fact/option/library/stakeholder they did not mention before and starts using it.",
+      "example_dilemma": "AI points out a stakeholder the participant's initial essay ignored; the final essay weighs that stakeholder.",
+      "example_agentic": "Agent uses a library the mathematician didn't know existed; they adopt it."
+    },
+    {
+      "key": "representational",
+      "label": "Representational",
+      "participant": "This changed how I see the problem",
+      "icon": "eye",
+      "definition": "A new conceptualisation or framing of the problem: what kind of problem it is, what matters, what the goal is.",
+      "cues": "Participant restates the problem in new terms, changes the end goal, or adopts a new organising frame.",
+      "example_dilemma": "Participant stops treating it as honesty-vs-kindness and reframes it as a question about autonomy.",
+      "example_agentic": "Trader reframes 'pick winning stocks' as 'manage exposure to one macro factor'."
+    },
+    {
+      "key": "reflective",
+      "label": "Reflective",
+      "participant": "Putting it into words, I realised something",
+      "icon": "mirror",
+      "definition": "The act of explaining, answering or articulating (often prompted by the AI) leads the participant to an insight drawn from their own knowledge.",
+      "cues": "Insight appears inside the participant's OWN message, often after being asked to explain or justify. The trigger may be an AI question.",
+      "example_dilemma": "Asked why fairness matters here, the participant realises their view rests on a personal experience.",
+      "example_agentic": "While describing their edge to the agent, a trader realises their real edge is industry knowledge, not timing."
+    },
+    {
+      "key": "contrastive",
+      "label": "Contrastive",
+      "participant": "Disagreeing with it made my own view clearer",
+      "icon": "split",
+      "definition": "Rejecting or pushing back on the AI's proposal clarifies or sharpens the participant's own beliefs or requirements.",
+      "cues": "Participant disagrees, then articulates a sharper position or constraint than they had before.",
+      "example_dilemma": "AI argues for strict impartiality; participant rejects it and articulates a clear account of special obligations.",
+      "example_agentic": "Agent proposes a momentum strategy; trader rejects it and states their risk constraints precisely for the first time."
+    },
+    {
+      "key": "counterfactual",
+      "label": "Counterfactual",
+      "participant": "A 'what if' opened things up",
+      "icon": "branch",
+      "definition": "A hypothetical variation (what if X weren't true / were different) changes how the participant reasons about the actual case.",
+      "cues": "'What if', 'suppose', 'imagine if' exchanges followed by a changed or more nuanced position.",
+      "example_dilemma": "'What if the promise had been made under pressure?' leads the participant to a conditional view.",
+      "example_agentic": "'What if rates stay flat?' leads the trader to add a hedge."
+    },
+    {
+      "key": "associative",
+      "label": "Associative",
+      "participant": "This connected to something I already knew",
+      "icon": "link",
+      "definition": "Linking two ideas the participant already knew but had not connected, or connecting to past experience.",
+      "cues": "'This is like...', 'reminds me of...', participant brings in an analogy or prior experience that reorganises their thinking.",
+      "example_dilemma": "Participant links the dilemma to a workplace whistleblowing situation they lived through.",
+      "example_agentic": "Gamer links a game studio's engagement metrics to its revenue guidance."
+    },
+    {
+      "key": "generative_error",
+      "label": "Generative error",
+      "participant": "Its mistake pointed me somewhere useful",
+      "icon": "wrench",
+      "definition": "An incorrect, failed or partial AI output that nonetheless leads the participant to a productive idea.",
+      "cues": "AI output is wrong or fails (error, wrong claim, bad code) but the participant extracts something useful from it.",
+      "example_dilemma": "AI misstates a legal fact; checking it leads the participant to a relevant consideration.",
+      "example_agentic": "Agent's proof attempt fails but uses a library that becomes the next step."
+    }
+  ],
+  "uptake": [
+    {"key": "integrated", "participant": "I built on it with my own reasoning", "mechanism": "spark"},
+    {"key": "adopted", "participant": "I mostly went along with its view", "mechanism": "persuasion"},
+    {"key": "copied", "participant": "I used its wording or answer directly", "mechanism": "copying"},
+    {"key": "none", "participant": "In the end it didn't change anything", "mechanism": "inert"}
+  ],
+  "latency": [
+    {"key": "immediate", "participant": "Right away"},
+    {"key": "delayed", "participant": "A few messages later"},
+    {"key": "review", "participant": "Only now, looking back"}
+  ]
+}

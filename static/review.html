@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spark Review</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="rv">
+  <header class="rv-top">
+    <span class="side-brand" id="brand"></span>
+    <span class="topbar-title" id="title"></span>
+    <span class="tag" id="meta"></span>
+    <div class="topbar-right" id="actions"></div>
+  </header>
+  <div class="rv-body">
+    <section class="rv-left">
+      <div class="player" id="player"></div>
+      <div class="track-wrap">
+        <div class="track" id="track"><div class="track-line"></div><div class="playhead" id="playhead"></div></div>
+        <div class="track-legend" id="legend"></div>
+      </div>
+      <div class="rv-transcript-head">
+        <h3 style="margin:0">Conversation at this point</h3>
+        <label class="small muted"><input type="checkbox" id="show-tools"> show tool calls</label>
+        <label class="small muted"><input type="checkbox" id="follow" checked> follow video</label>
+      </div>
+      <div class="rv-transcript" id="transcript"></div>
+    </section>
+    <aside class="rv-right">
+      <div id="intro"></div>
+      <div id="flags"></div>
+      <div id="parser"></div>
+    </aside>
+  </div>
+</div>
+<script type="module" src="/static/review.js"></script>
+</body>
+</html>

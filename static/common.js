@@ -1,0 +1,217 @@
+// Shared helpers: API, icons, taxonomy, and the Mark-moment popover component.
+
+export const api = async (method, url, body, headers = {}) => {
+  const opts = { method, headers: { ...headers } };
+  if (body instanceof Blob || body instanceof ArrayBuffer) opts.body = body;
+  else if (body !== undefined) { opts.body = JSON.stringify(body); opts.headers["Content-Type"] = "application/json"; }
+  const res = await fetch(url, opts);
+  const data = res.headers.get("content-type")?.includes("json") ? await res.json() : await res.text();
+  if (!res.ok) throw new Error(data?.error || res.statusText);
+  return data;
+};
+
+const PATHS = {
+  bulb: '<path d="M9 18h6M10 21.5h4"/><path d="M12 2.5a6.5 6.5 0 0 0-3.8 11.8c.5.4.8 1 .8 1.7v.5h6V16c0-.7.3-1.3.8-1.7A6.5 6.5 0 0 0 12 2.5z"/>',
+  plus: '<circle cx="12" cy="12" r="9"/><path d="M12 8v8M8 12h8"/>',
+  eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  mirror: '<path d="M20.5 11.5a8.5 8.5 0 0 1-12.3 7.6L3.5 20.5l1.4-4.4A8.5 8.5 0 1 1 20.5 11.5z"/><path d="M12 7.5v1.2M12 14.3v1.2M8.6 11.5h1.2M14.2 11.5h1.2"/>',
+  split: '<path d="M12 21v-7M12 14 5 6M12 14l7-8"/><path d="M5 10V6h4M19 10V6h-4"/>',
+  branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7v10M18 10c0 4-4 4-10 7"/>',
+  link: '<path d="M10 13.5a4.5 4.5 0 0 0 6.8.5l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.6 1.6"/><path d="M14 10.5a4.5 4.5 0 0 0-6.8-.5l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.6-1.6"/>',
+  wrench: '<path d="M14.5 6.5a4 4 0 0 0-5.3 5.3L3.5 17.5l3 3 5.7-5.7a4 4 0 0 0 5.3-5.3l-2.4 2.4-2.6-.4-.4-2.6z"/>',
+  bookmark: '<path d="M6.5 3.5h11v17l-5.5-3.8-5.5 3.8z"/>',
+  x: '<path d="M6 6l12 12M18 6 6 18"/>',
+  chat: '<path d="M20.5 15a2 2 0 0 1-2 2H8l-4.5 4V5.5a2 2 0 0 1 2-2h13a2 2 0 0 1 2 2z"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  star: '<path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1 5.8L12 16.8l-5.2 2.8 1-5.8-4.3-4.1 5.9-.8z"/>',
+  upload: '<path d="M12 15.5V4M7.5 8.5 12 4l4.5 4.5M4.5 15.5v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3"/>',
+  window: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M3.5 8.5h17"/>',
+  sparkle: '<path d="M12 3.5 13.8 10l6.7 2-6.7 2L12 20.5 10.2 14l-6.7-2 6.7-2z"/>',
+  play: '<path d="M7.5 5.5v13l11-6.5z"/>',
+  chev: '<path d="m6 9 6 6 6-6"/>',
+  stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/>',
+};
+export const icon = (name, cls = "") =>
+  `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PATHS[name] || ""}</svg>`;
+
+export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+export const $ = (sel, root = document) => root.querySelector(sel);
+export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+export const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+export const fmtDate = (iso) => iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+
+export const TYPE_COLOR = {
+  additive: "var(--t-additive)", representational: "var(--t-representational)", reflective: "var(--t-reflective)",
+  contrastive: "var(--t-contrastive)", counterfactual: "var(--t-counterfactual)", associative: "var(--t-associative)",
+  generative_error: "var(--t-generative_error)",
+};
+
+let CONFIG = null;
+export async function config() {
+  if (!CONFIG) CONFIG = await api("GET", "/api/config");
+  return CONFIG;
+}
+export const typeByKey = (cfg, key) => cfg.taxonomy.types.find((t) => t.key === key);
+
+// Lightweight Markdown-ish rendering for chat messages (paragraphs, bold, code, lists).
+export function renderText(text) {
+  const blocks = esc(text).split(/\n{2,}/);
+  return blocks.map((b) => {
+    if (/^```/.test(b)) return `<pre>${b.replace(/^```\w*\n?|```$/g, "")}</pre>`;
+    if (/^(\s*[-*] .+\n?)+$/.test(b)) return `<ul>${b.trim().split(/\n/).map((l) => `<li>${inline(l.replace(/^\s*[-*] /, ""))}</li>`).join("")}</ul>`;
+    if (/^(\s*\d+\. .+\n?)+$/.test(b)) return `<ol>${b.trim().split(/\n/).map((l) => `<li>${inline(l.replace(/^\s*\d+\. /, ""))}</li>`).join("")}</ol>`;
+    return `<p>${inline(b).replace(/\n/g, "<br>")}</p>`;
+  }).join("");
+}
+const inline = (s) => s.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+
+/**
+ * The "What happened?" popover. The mark is already saved when this opens;
+ * picking a type only annotates it, so the popover is skippable by design.
+ * Closes on an outside click, when the participant resumes typing, or after `timeout` ms
+ * of no interaction, so it never blocks the conversation.
+ */
+export function openMarkPopover({ anchor, cfg, onPick, onClose, timeout = 30000, title = "What happened?" }) {
+  closeMarkPopover();
+  const pop = document.createElement("div");
+  pop.className = "mark-pop";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", "Describe this moment (optional)");
+  pop.innerHTML = `
+    <div class="mark-pop-head">
+      <span class="mark-pop-title">${esc(title)}</span><span class="muted">Optional</span>
+      <button class="icon-btn mark-pop-close" aria-label="Close">${icon("x")}</button>
+    </div>
+    <div class="mark-pop-saved">${icon("check")} Moment saved. Add a quick tag if you like.</div>
+    <div class="mark-pop-list">
+      ${cfg.taxonomy.types.map((t) => `
+        <button class="mark-opt" data-type="${t.key}" style="--tc:${TYPE_COLOR[t.key]}">
+          ${icon(t.icon)}<span>${esc(t.participant)}</span>
+        </button>`).join("")}
+    </div>
+    <div class="mark-pop-sep"></div>
+    <button class="mark-opt mark-opt-muted" data-type="">${icon("bookmark")}<span>Just bookmark · I'll explain later</span></button>`;
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  const w = Math.min(380, window.innerWidth - 24);
+  pop.style.width = w + "px";
+  pop.style.left = Math.max(12, Math.min(window.innerWidth - w - 12, r.right - w)) + "px";
+  pop.style.maxHeight = window.innerHeight - 16 + "px";
+  const h = pop.offsetHeight;
+  pop.style.top = Math.max(8, r.top - h - 10 > 8 ? r.top - h - 10 : Math.min(window.innerHeight - h - 8, r.bottom + 10)) + "px";
+
+  let timer = setTimeout(done, timeout);
+  pop.addEventListener("pointermove", () => { clearTimeout(timer); timer = setTimeout(done, timeout); });
+  function done() { clearTimeout(timer); closeMarkPopover(); onClose?.(); }
+  pop.querySelector(".mark-pop-close").onclick = done;
+  pop.querySelectorAll(".mark-opt").forEach((b) => (b.onclick = () => { onPick?.(b.dataset.type || null); done(); }));
+  pop._outside = (e) => { if (!pop.contains(e.target) && e.target !== anchor && !anchor.contains(e.target)) done(); };
+  setTimeout(() => document.addEventListener("pointerdown", pop._outside), 0);
+  pop._keys = (e) => {
+    if (e.key === "Escape") return done();
+    if (e.target.closest?.("textarea,input") && e.key.length === 1) return done();
+    const n = parseInt(e.key, 10);
+    if (n >= 1 && n <= cfg.taxonomy.types.length && !e.target.closest("textarea,input")) {
+      onPick?.(cfg.taxonomy.types[n - 1].key); done();
+    }
+  };
+  document.addEventListener("keydown", pop._keys);
+  // Don't steal focus from the composer: a participant marking mid-sentence keeps typing.
+  if (!document.activeElement?.closest?.("textarea,input")) pop.querySelector(".mark-opt").focus({ preventScroll: true });
+  return pop;
+}
+export function closeMarkPopover() {
+  const p = document.querySelector(".mark-pop");
+  if (p) {
+    document.removeEventListener("keydown", p._keys);
+    document.removeEventListener("pointerdown", p._outside);
+    p.remove();
+  }
+}
+
+export function toast(msg) {
+  let t = document.querySelector(".toast");
+  if (!t) { t = document.createElement("div"); t.className = "toast"; document.body.appendChild(t); }
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove("show"), 2200);
+}
+
+export const isMarkHotkey = (e) => e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "m" || e.key === "M");
+
+// ------------------------------------------------------------------ shared annotation form
+
+/** The post-hoc annotation form for one mark (types, before/after, uptake, timing, size). */
+export function annotationFormHTML(cfg, m, { external = false } = {}) {
+  const r = m.review || {};
+  const types = r.types || (m.quick_type ? [m.quick_type] : []);
+  const primary = r.primary || types[0] || null;
+  const chip = (t) => `<button class="chip ${types.includes(t.key) ? "on" : ""} ${primary === t.key ? "primary" : ""}" data-type="${t.key}" style="--tc:${TYPE_COLOR[t.key] || "var(--text-3)"}">
+      ${icon(t.icon)}<span>${esc(t.participant)}</span><span class="star" title="Main one">${icon("star")}</span></button>`;
+  const opt = (name, list, val) => list.map((o) => `<button class="chip ${val === o.key ? "on" : ""}" data-${name}="${o.key}">${esc(o.participant)}</button>`).join("");
+  return `<div class="annot">
+    <div class="qlabel">What happened? <span class="muted">Pick any that fit; tap ★ for the main one.</span></div>
+    <div class="chips" data-group="types">${cfg.taxonomy.types.map(chip).join("")}
+      ${chip({ key: "other", icon: "sparkle", participant: "Something else" })}</div>
+    <div class="two" style="margin-top:12px">
+      <label class="field" style="margin:0"><span>Before this moment, what were you thinking${external ? " or planning" : ""}?</span><textarea data-f="before">${esc(r.before || "")}</textarea></label>
+      <label class="field" style="margin:0"><span>What changed for you?</span><textarea data-f="after">${esc(r.after || "")}</textarea></label>
+    </div>
+    <div class="qlabel">How did you take it up?</div>
+    <div class="chips" data-group="uptake">${opt("uptake", cfg.taxonomy.uptake, r.uptake)}</div>
+    <div class="qlabel">When did it click?</div>
+    <div class="chips" data-group="latency">${opt("latency", cfg.taxonomy.latency, r.latency)}</div>
+    <div class="qlabel">How big a shift was it?</div>
+    <div class="row"><span class="small muted">small</span><div class="scale">${[1, 2, 3, 4, 5].map((v) => `<button data-int="${v}" class="${r.intensity === v ? "on" : ""}">${v}</button>`).join("")}</div><span class="small muted">big</span></div>
+    <div class="row" style="margin-top:16px"><button class="btn btn-primary btn-sm" data-save>Save</button>
+      <button class="btn btn-sm btn-ghost muted" data-remove>Not really a moment, remove it</button></div>
+  </div>`;
+}
+
+export function wireAnnotationForm(root, m, { sid, onSaved, onRemoved }) {
+  const st = { types: [...(m.review?.types || (m.quick_type ? [m.quick_type] : []))], primary: m.review?.primary || m.quick_type || null,
+    uptake: m.review?.uptake || null, latency: m.review?.latency || null, intensity: m.review?.intensity || null };
+  const paintTypes = () => $$('[data-group="types"] .chip', root).forEach((c) => {
+    c.classList.toggle("on", st.types.includes(c.dataset.type));
+    c.classList.toggle("primary", st.primary === c.dataset.type);
+  });
+  $$('[data-group="types"] .chip', root).forEach((c) => (c.onclick = (e) => {
+    const k = c.dataset.type;
+    if (e.target.closest(".star") && st.types.includes(k)) { st.primary = k; return paintTypes(); }
+    st.types = st.types.includes(k) ? st.types.filter((x) => x !== k) : [...st.types, k];
+    if (!st.types.includes(st.primary)) st.primary = st.types[0] || null;
+    paintTypes();
+  }));
+  for (const g of ["uptake", "latency"]) {
+    $$(`[data-${g}]`, root).forEach((c) => (c.onclick = () => {
+      st[g] = c.dataset[g];
+      $$(`[data-${g}]`, root).forEach((x) => x.classList.toggle("on", x === c));
+    }));
+  }
+  $$("[data-int]", root).forEach((b) => (b.onclick = () => {
+    st.intensity = +b.dataset.int;
+    $$("[data-int]", root).forEach((x) => x.classList.toggle("on", x === b));
+  }));
+  $("[data-save]", root).onclick = async () => {
+    if (!st.types.length) return toast("Pick at least one option under “What happened?”");
+    const review = { ...st, before: $('[data-f="before"]', root).value, after: $('[data-f="after"]', root).value };
+    await api("PATCH", `/api/sessions/${sid}/marks/${m.id}`, { review });
+    m.review = review;
+    toast("Saved");
+    onSaved?.(m);
+  };
+  $("[data-remove]", root).onclick = async () => {
+    if (!confirm("Remove this moment?")) return;
+    await api("PATCH", `/api/sessions/${sid}/marks/${m.id}`, { deleted: true });
+    m.deleted = true;
+    onRemoved?.(m);
+  };
+}
+
+export const fmtClock = (sec) => {
+  if (sec == null || !isFinite(sec)) return "–:––";
+  const s = Math.max(0, Math.round(sec));
+  const h = Math.floor(s / 3600), mm = Math.floor((s % 3600) / 60), ss = s % 60;
+  return (h ? `${h}:${String(mm).padStart(2, "0")}` : `${mm}`) + `:${String(ss).padStart(2, "0")}`;
+};

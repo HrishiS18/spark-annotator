@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spark Annotator</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="landing">
+  <div class="landing-head"><span id="logo"></span><h1 style="margin:0">Spark Annotator</h1><span id="parser-pill" class="status-pill live"></span></div>
+  <p class="muted" style="margin-top:4px">Participants work with their own AI agent while a floating <b>Flag</b> button stays on top of it and the screen is recorded. Afterwards they rewatch each flagged minute and annotate it, and a codebook parser reads the transcript turn by turn to find candidate sparks.</p>
+
+  <div class="cards">
+    <div class="card">
+      <h2><span data-ic="bulb"></span>Run a session with the Spark Recorder</h2>
+      <ol class="steps-list">
+        <li>On the participant's computer (Windows, macOS, Linux or ChromeOS) open <a href="/record"><code>/record</code></a> in <b>Chrome or Edge</b>. Nothing to install.</li>
+        <li>They enter their ID, press <b>Share my screen &amp; start recording</b> and choose <i>Entire screen</i>. Video only, no sound.</li>
+        <li>They press <b>Pop out the Flag button</b>: a small Flag button floats on top of every window, including their agent (Codex, Claude Code, ChatGPT…). Each press timestamps that moment; they can pick a spark type or just <i>bookmark</i> it to explain later.</li>
+        <li><b>End session</b> saves the recording (it uploads continuously while recording), they attach their agent's log, and the review opens, where they rewatch each flagged minute and annotate it.</li>
+      </ol>
+      <form id="code-form" class="row" style="margin-top:14px">
+        <input type="text" name="participant_id" placeholder="Participant ID (to pre-create a session link)" class="grow" style="flex:1">
+        <button class="btn btn-sm" type="submit">Create session link</button>
+      </form>
+      <div id="code-out" class="small" style="margin-top:8px"></div>
+    </div>
+
+    <div class="card">
+      <h2><span data-ic="eye"></span>Review &amp; analyse</h2>
+      <p>The dashboard lists every session. Open one to see the participant's flags, the codebook parser's candidates (with the rules and words that fired) and the before/after attribution on one timeline. <b>Recording review</b> plays the screen recording with flags and transcript in sync.</p>
+      <a class="btn" href="/researcher">Open dashboard</a>
+      <p class="small muted" style="margin-bottom:0">Exports: <a href="/api/export/marks.csv">flags</a> · <a href="/api/export/candidates.csv">parser candidates</a> · <a href="/api/export/parse.csv">per-turn parse features</a></p>
+    </div>
+  </div>
+
+  <details class="card" style="margin-top:16px">
+    <summary style="cursor:pointer"><b>In-browser conversation study</b> <span class="muted small">(moral dilemma / trading strategy with before &amp; after write-ups)</span></summary>
+    <p class="small muted">Runs the conversation inside this site instead of the participant's own agent. The AI partner needs an <code>ANTHROPIC_API_KEY</code> on the server (<span id="llm"></span>); everything else, including flagging and the parser, works without it. Open <a href="/record">/record</a> alongside it if you also want a screen recording.</p>
+    <form id="start" style="max-width:480px">
+      <label class="field"><span>Participant ID</span><input type="text" name="participant_id" placeholder="e.g. P014" required></label>
+      <label class="field"><span>Study</span><select name="study"></select></label>
+      <label class="field"><span>Question / task</span><select name="prompt_id"></select></label>
+      <label class="field"><span>AI persona</span><select name="persona"></select></label>
+      <label class="field"><span>Partner</span>
+        <select name="condition">
+          <option value="ai">AI partner</option>
+          <option value="human">Human partner (comparison group)</option>
+        </select>
+      </label>
+      <label class="field hidden" id="room-field"><span>Room code (both partners enter the same code)</span><input type="text" name="room" placeholder="e.g. BLUE7"></label>
+      <button class="btn btn-primary" type="submit">Start in-browser session</button>
+    </form>
+  </details>
+
+  <div class="card" style="margin-top:16px">
+    <h2><span data-ic="sparkle"></span>Spark types captured</h2>
+    <p class="small muted" style="margin:0">Participants see the plain-language phrasing in the Flag menu and the review; the parser and dashboard use the type labels.</p>
+    <div class="tax-grid" id="tax"></div>
+  </div>
+</div>
+
+<script type="module">
+import { api, icon, esc, config, TYPE_COLOR, $, $$ } from "/static/common.js";
+document.getElementById("logo").innerHTML = icon("bulb");
+$$("[data-ic]").forEach((el) => (el.outerHTML = icon(el.dataset.ic)));
+const cfg = await config();
+$("#parser-pill").textContent = `Codebook parser v${cfg.codebook.version} · no API needed`;
+$("#llm").textContent = cfg.llm.live ? `currently connected: ${cfg.llm.model}` : "currently not set, so a scripted demo partner is used";
+
+$("#tax").innerHTML = cfg.taxonomy.types.map((t) => `
+  <div class="tax" style="--tc:${TYPE_COLOR[t.key]}"><b>${icon(t.icon)}${esc(t.label)}</b>
+  <div>“${esc(t.participant)}”</div><div class="muted" style="margin-top:4px">${esc(t.definition)}</div></div>`).join("");
+
+$("#code-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const pid = e.target.participant_id.value.trim() || "unassigned";
+  const s = await api("POST", "/api/sessions", { study: "agentic", participant_id: pid });
+  const link = `${location.origin}/record?session=${s.id}`;
+  $("#code-out").innerHTML = `Session code <code style="font-size:14px">${s.id}</code> · recorder link: <a href="${link}">${link}</a> · <a href="/review?id=${s.id}">review page</a>`;
+};
+
+const f = $("#start");
+const inBrowser = cfg.studies.filter((s) => !s.external);
+f.study.innerHTML = inBrowser.map((s) => `<option value="${s.key}">${esc(s.label)}</option>`).join("");
+f.persona.innerHTML = cfg.personas.map((p) => `<option value="${p.key}">${esc(p.label)}</option>`).join("");
+function syncStudy() {
+  const s = cfg.studies.find((x) => x.key === f.study.value);
+  f.prompt_id.innerHTML = s.prompts.map((p) => `<option value="${p.id}">${esc(p.title)}</option>`).join("");
+  f.persona.value = s.default_persona;
+}
+function syncCond() {
+  $("#room-field").classList.toggle("hidden", f.condition.value !== "human");
+  f.room.required = f.condition.value === "human";
+}
+f.study.onchange = syncStudy; f.condition.onchange = syncCond; syncStudy(); syncCond();
+f.onsubmit = async (e) => {
+  e.preventDefault();
+  const s = await api("POST", "/api/sessions", Object.fromEntries(new FormData(f)));
+  location.href = `/session?id=${s.id}`;
+};
+</script>
+</body>
+</html>
