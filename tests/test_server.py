@@ -2,6 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -19,7 +20,7 @@ class ServerTests(unittest.TestCase):
         root = Path(self.tmp.name)
         for directory in ("uploads", "recordings"):
             (root / directory).mkdir()
-        self.store = Store(root / "study.sqlite3")
+        self.store = Store(root / "study.sqlite3", write_lock=server.LOCK)
         self.runtime = RuntimeManager(self.store, root, rpc_factory=FakeRpc, command=["test"])
         self.patches = [patch.object(server, "_STORE", self.store), patch.object(server, "_RUNTIME", self.runtime),
                         patch.object(server, "UPLOADS", str(root / "uploads")),
@@ -125,6 +126,24 @@ class ServerTests(unittest.TestCase):
             code, _ = self.request(self.prefix + "/message", {"text": "Hi"}, "POST")
         self.assertEqual(code, 503)
         self.assertFalse(any(e["role"] == "assistant" for e in self.store.load(self.sid)["events"]))
+
+    def test_live_deltas_and_bookmarks_do_not_conflict_or_lose_records(self):
+        self.create()
+        worker = self.runtime.get(self.sid)
+        worker.message("Test", "message-0001")
+        def stream():
+            for _ in range(25):
+                worker.notification({"method": "item/agentMessage/delta", "params": {
+                    "threadId": worker.thread_id, "turnId": "turn_test", "itemId": "msg_test", "delta": " more"}})
+        def mark(i):
+            code, _ = self.request(self.prefix + "/marks", {"id": f"m_{i:08x}", "anchor": "latest"}, "POST")
+            return code
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            live = pool.submit(stream)
+            codes = list(pool.map(mark, range(20)))
+            live.result()
+        self.assertEqual(codes, [201] * 20)
+        self.assertEqual(len(self.store.load(self.sid)["marks"]), 20)
 
 
 if __name__ == "__main__":

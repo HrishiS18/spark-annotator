@@ -90,6 +90,9 @@ class StorageTests(unittest.TestCase):
         self.assertTrue(all(c["participant_response"] is None for c in self.store.load(s["id"])["candidates"]))
         self.assertEqual(self.store.versions(s["id"], "candidate_response", ids[0])[0]["response"]["answer"], "yes")
         self.assertEqual(len(self.store.load(s["id"])["analysis_runs"]), 2)
+        exported = self.store.export(s["id"])
+        self.assertTrue(any(r["kind"] == "candidate_response" and r["document"]["response"]["answer"] == "yes"
+                            for r in exported["archived_records"]))
 
     def test_imports_deduplicate_without_renumbering_or_reanchoring(self):
         s = session()

@@ -12,6 +12,7 @@ from storage import Store
 
 class FakeRpc:
     account = {"type": "chatgpt"}
+    history = []
 
     def __init__(self, command, cwd, callback, disconnected):
         self.callback, self.on_disconnect = callback, disconnected
@@ -25,7 +26,7 @@ class FakeRpc:
         if method == "account/read":
             return {"account": self.account}
         if method in ("thread/start", "thread/resume"):
-            return {"thread": {"id": params.get("threadId", "thr_test"), "turns": []},
+            return {"thread": {"id": params.get("threadId", "thr_test"), "turns": self.history if method == "thread/resume" else []},
                     "model": "mock-model", "modelProvider": "test"}
         if method == "turn/start":
             self.turns += 1
@@ -91,7 +92,7 @@ class RuntimeTests(unittest.TestCase):
         start = next(m for m in worker.rpc.sent if m.get("method") == "thread/start")
         self.assertNotIn("PRIVATE BASELINE", str(start))
         self.assertEqual(start["params"]["approvalPolicy"], "untrusted")
-        self.assertEqual(start["params"]["sandbox"], "workspaceWrite")
+        self.assertEqual(start["params"]["sandbox"], "workspace-write")
         self.assertEqual(self.store.load(self.sid)["runtime"]["model"], "mock-model")
         worker.connected = False
         resumed = self.manager.get(self.sid)
@@ -154,6 +155,21 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("secret.txt", {f["path"] for f in self.manager.files(self.sid)})
         with self.assertRaises(KeyError):
             self.manager.file(self.sid, "secret.txt")
+
+    def test_resume_attaches_previously_unstreamed_user_item_without_duplication(self):
+        worker = self.manager.get(self.sid)
+        user = worker.message("Test", "message-0001")
+        worker.interrupt()
+        worker.connected = False
+        history = [{"id": "turn_test", "status": "interrupted", "items": [
+            {"id": "previously-unstreamed-user", "type": "userMessage", "content": [{"type": "text", "text": "Test"}]},
+            {"id": "msg_test", "type": "agentMessage", "text": "First partial text"}]}]
+        with patch.object(FakeRpc, "history", history):
+            self.manager.get(self.sid)
+        s = self.store.load(self.sid)
+        self.assertEqual(len(s["events"]), 2)
+        self.assertEqual(s["events"][0]["id"], user["id"])
+        self.assertEqual(s["events"][1]["status"], "interrupted")
 
     @unittest.skipUnless(Path('/usr/bin/sandbox-exec').exists(), "macOS privacy fence")
     def test_privacy_fence_blocks_records_and_peer_workspace(self):

@@ -153,7 +153,9 @@ class Worker:
             if not account.get("account"):
                 raise RuntimeUnavailable("Codex is not signed in. Run `codex login` on this Mac, or configure an API key locally; do not paste a key into the chat.")
             runtime = session["runtime"]
-            params = {"cwd": str(self.workspace), "approvalPolicy": "untrusted", "sandbox": "workspaceWrite"}
+            # Thread-start SandboxMode uses kebab-case; turn SandboxPolicy's
+            # discriminant uses camelCase in this installed protocol version.
+            params = {"cwd": str(self.workspace), "approvalPolicy": "untrusted", "sandbox": "workspace-write"}
             if runtime.get("model"):
                 params["model"] = runtime["model"]
             if runtime.get("thread_id"):
@@ -168,13 +170,15 @@ class Worker:
             def ready(s):
                 s["runtime"].update(status="ready", error=None, thread_id=self.thread_id,
                     model=result.get("model") or runtime.get("model"),
-                    model_provider=result.get("modelProvider"), sandbox="workspaceWrite",
+                    model_provider=result.get("modelProvider"), sandbox="workspace-write",
                     approval_policy="untrusted", auth_mode=account["account"].get("type"),
                     active_turn=None, approvals=[], version=manager.version)
             self.store.update(sid, ready, {"method": "runtime/ready"})
             # Restore completed/partial items without a new inference request.
             for turn in result["thread"].get("turns", []):
                 for item in turn.get("items", []):
+                    if turn.get("status") != "completed":
+                        item = dict(item, status="interrupted" if turn.get("status") == "inProgress" else turn.get("status", "interrupted"))
                     self._item(item, turn["id"], completed=True)
             self.connected = True
         except BaseException:
@@ -211,6 +215,13 @@ class Worker:
                           and e["meta"].get("runtime_thread_id") == self.thread_id), None)
             if role == "user" and event is None:
                 event = next((e for e in s["events"] if e["id"] == self.last_user_event), None)
+                if event is None:
+                    # Codex does not always stream a userMessage item. Its ID
+                    # may first appear on thread/resume; attach it to the user
+                    # event already saved when turn/start was accepted.
+                    event = next((e for e in s["events"] if e["role"] == "user"
+                                  and e.get("meta", {}).get("runtime_turn_id") == turn_id
+                                  and not e.get("meta", {}).get("runtime_item_id")), None)
             if event is None:
                 iso, t = stamp()
                 event = {"id": "ev_" + uuid.uuid4().hex, "ts": iso, "t": t,

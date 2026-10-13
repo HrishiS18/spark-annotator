@@ -59,7 +59,7 @@ def get_store():
     global _STORE
     with LOCK:
         if _STORE is None:
-            _STORE = storage.Store(os.path.join(DATA, "study.sqlite3"))
+            _STORE = storage.Store(os.path.join(DATA, "study.sqlite3"), write_lock=LOCK)
             _STORE.migrate_legacy(SESSIONS)
         return _STORE
 
@@ -740,7 +740,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, body, "text/markdown" if rest[0].endswith(".md") else "text/plain",
                               {"Content-Disposition": f"inline; filename={sid}-{rest[0]}"})
         if method == "GET" and rest == ["export.json"]:
-            s = load(sid)
+            s = get_store().export(sid)
             s["analysis"] = analysis(s)
             return self._send(200, s, "application/json",
                               {"Content-Disposition": f"attachment; filename={sid}.json"})

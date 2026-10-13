@@ -9,6 +9,7 @@ import copy
 import hashlib
 import json
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -27,7 +28,11 @@ class Store:
     COLLECTIONS = {"events", "marks", "candidates", "codes", "analysis_runs",
                    "researcher_annotations", "_revision", "analysis"}
 
-    def __init__(self, path):
+    def __init__(self, path, write_lock=None):
+        # The compatibility server still has read/modify/save blocks. Sharing
+        # their lock prevents runtime deltas interleaving inside such a block;
+        # SQLite transactions and revision checks also protect other processes.
+        self.write_lock = write_lock or threading.RLock()
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
@@ -164,14 +169,14 @@ class Store:
         return revision
 
     def save(self, session):
-        with self.connect() as db:
+        with self.write_lock, self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             revision = self._save(db, session)
         session["_revision"] = revision
 
     def update(self, sid, mutate, notification=None):
         """Read/modify/write (and optional feed publication) in one transaction."""
-        with self.connect() as db:
+        with self.write_lock, self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             s = self._load(db, sid)
             result = mutate(s)
@@ -201,6 +206,21 @@ class Store:
             return [json.loads(r[0]) for r in db.execute(
                 "SELECT document FROM record_versions WHERE session_id=? AND kind=? AND id=? ORDER BY seq",
                 (sid, kind, rid))]
+
+    def export(self, sid):
+        """Complete research export, including superseded evidence and responses."""
+        with self.connect() as db:
+            db.execute("BEGIN")
+            s = self._load(db, sid)
+            s["record_history"] = [{"kind": r["kind"], "id": r["id"], "recorded_t": r["recorded_t"],
+                                    "document": json.loads(r["document"])} for r in db.execute(
+                "SELECT * FROM record_versions WHERE session_id=? ORDER BY seq", (sid,))]
+            s["archived_records"] = [{"kind": r["kind"], "id": r["id"], "document": json.loads(r["document"])}
+                for r in db.execute("SELECT * FROM records WHERE session_id=? AND active=0 ORDER BY kind,ordinal", (sid,))]
+            s["runtime_trace"] = [{"seq": r["seq"], "received_t": r["received_t"],
+                                   "notification": json.loads(r["document"])} for r in db.execute(
+                "SELECT * FROM runtime_feed WHERE session_id=? ORDER BY seq", (sid,))]
+            return s
 
     def migrate_legacy(self, directory):
         count = 0
