@@ -1,12 +1,81 @@
 # Spark Annotator
 
-A research tool for finding **sparks**: moments in a human–AI agent interaction that shift or reframe the participant's thinking, context or goal.
+A research prototype for studying **sparks**: participant-perceived valuable ideas or insights during an interaction. Perceived value, adoption, and eventual usefulness are distinct measurements.
+
+## Integrated Codex study (v2)
+
+The default in-browser AI partner is now a **real Codex app-server runtime**, not an Anthropic text-only call. The browser is our custom interface; Codex supplies its existing agent loop, command execution, and file-editing tools. The external recorder remains a separate, supported workflow below.
+
+```bash
+cd spark-annotator
+python3 -m venv .venv
+.venv/bin/python server.py
+```
+
+Open **http://127.0.0.1:8765**, expand **Integrated agent study**, and select a task. The session runs baseline → conversation → final answer → review. During conversation:
+
+- Responses and tool activity stream into the interface.
+- The task workspace supports file uploads, text previews, and artifact downloads.
+- Command/file approvals are explicit; **Stop agent** interrupts a running turn.
+- Bookmarks and their explanations use stable event IDs and survive refreshing.
+- Reconnection resumes the saved thread without automatically starting inference.
+
+Codex must be installed **on the execution host**. `codex login` can use an eligible ChatGPT account for this local prototype; API-key authentication is also supported. If `OPENAI_API_KEY` is configured securely in the server environment, the bridge can authenticate over its private subprocess pipe. Never paste keys into participant messages, study configuration, or the UI. The bundled Codex executable in the desktop app is detected on macOS when it is absent from PATH.
+
+The optional **Plain LLM chat** and **Scripted demo** modes are explicitly labeled. Authentication or model failures never silently become demo replies. `SPARK_DEMO=1` only affects the legacy Anthropic integration; it does **not** disable inference in Codex sessions. Select **Scripted demo** explicitly for an offline demonstration.
+
+### Storage and migration
+
+`data/study.sqlite3` is the authoritative store. On first startup, existing `data/sessions/*.json` files are imported once; their bytes are not modified or deleted. Stop the old server before starting v2 so it cannot continue writing those legacy files.
+
+- Separate records hold events, bookmarks, participant reviews, researcher codes, and automated predictions.
+- SQLite transactions and revision checks reject stale overwrites.
+- Event/review revisions and each analysis run are retained. Reruns do not reuse participant answers to earlier predictions.
+- Re-imports preserve old evidence and annotation anchors rather than renumbering events.
+- JSON exports include historical records, archived prediction responses, and runtime traces. CSVs remain current-view exports.
+- `data/workspaces/<session-id>/` holds task files. Raw log uploads and video still live under `data/uploads/` and `data/recordings/`.
+
+Back up SQLite using a SQLite-aware backup or with the server stopped. While running, its WAL file can contain uncheckpointed transactions; copying only the `.sqlite3` file is not a reliable backup. All `data/` is git-ignored.
+
+### Local-prototype limits
+
+This integration is currently **macOS execution host + localhost only**. A macOS privacy fence prevents the Codex subprocess tree from reading/writing study records or other sessions' task folders. Codex uses workspace-write command sandboxing, no command-network access by default, and explicit approvals. This does **not** constitute full host/credential isolation: tools may still read unrelated host paths outside the protected study-data directory, and approvals can authorize broader command access. Use synthetic, non-sensitive tasks during development.
+
+Participant/researcher authentication, hosted execution isolation, resource limits, and production deployment are still outstanding. Do not expose this as a public study service. Hosted use must not reuse a researcher's ChatGPT login as a shared service credential.
+
+The runtime was exercised with **codex-cli 0.162.0-alpha.2**. App-server is experimental; pin and test the runtime version before a study. The installed version, effective model, requested effort, sandbox, approval policy, and task/persona configuration are recorded with sessions. [Official app-server documentation](https://learn.chatgpt.com/docs/app-server).
+
+Optional host settings: `SPARK_CODEX_BIN`, `SPARK_CODEX_MODEL`, `SPARK_CODEX_EFFORT` (default `medium`), `SPARK_TURN_TIMEOUT` (default 600 seconds), and `SPARK_DATA_DIR`. Changing host settings does not change the pinned model of an existing thread. These are server settings, not participant-controlled shell arguments.
+
+### Verification
+
+Unit/integration tests use temporary data and a fake runtime, with no model calls:
+
+```bash
+SPARK_QUIET=1 .venv/bin/python -m unittest discover -s tests -v
+```
+
+Optional headless browser QA requires Playwright and Chrome/Chromium:
+
+```bash
+node tests/browser_smoke.cjs
+```
+
+Set `SPARK_CHROME_PATH` if using a locally installed Chrome executable and `NODE_PATH` if Playwright is provided by a bundled runtime. The browser test covers baseline, streaming, approvals, tools, uploads, artifacts, bookmarking, refresh, review, and export.
+
+A **live** smoke test is separately opt-in and consumes the host's configured Codex usage. It uses only synthetic temporary files and accepts only its narrowly specified test actions:
+
+```bash
+.venv/bin/python tests/live_smoke.py --run-live
+```
+
+## External-agent recorder (original workflow)
 
 - **Record.** Participants work with their own AI agent (Codex, Claude Code, ChatGPT…) while their screen is recorded in the browser (video only, no audio). A small **Flag** button floats on top of every window; one press timestamps the moment, and they can pick a spark type or just bookmark it.
 - **Review.** Afterwards they rewatch the recording with their flags on the timeline and annotate each one.
 - **Analyse.** The agent's conversation log is parsed into a timestamped transcript and coded two ways: a deterministic **codebook parser** (no API) and an optional **LLM judge** (Claude). The dashboard compares flags, parser and judge side by side.
 
-Nothing to install on participants' computers. The server is plain Python (standard library only).
+The recorder needs no participant-side installation. The study server and Codex bridge use Python's standard library; Codex is a separate host dependency. Anthropic is optional for plain chat and the judge.
 
 ---
 
@@ -16,7 +85,7 @@ Nothing to install on participants' computers. The server is plain Python (stand
 
 | | |
 |---|---|
-| Server | Python **3.9+** (macOS, Windows or Linux). No packages needed. |
+| Server | Python **3.9+**. Recorder supports macOS, Windows or Linux; integrated Codex execution currently requires macOS. |
 | Participants | **Chrome or Edge** on a desktop/laptop (Windows, macOS, Linux, ChromeOS) |
 | LLM judge (optional) | An [Anthropic API key](https://console.anthropic.com/) and the `anthropic` package |
 
@@ -114,7 +183,7 @@ Where agent logs live: Codex `~/.codex/sessions/…/rollout-*.jsonl`; Claude Cod
 
 **Codebook parser** (`spark_parser.py`, rules in `config/spark_codebook.json`). It reads the transcript word by word (which terms the agent introduced and the participant later adopted), response by response (agent questions, hypotheticals, errors) and prompt by prompt (13 weighted phrase/structure rules). It's deterministic, and every find shows the rule and the exact words that fired. Edit the JSON to tune it.
 
-**LLM judge** (`judge.py`). Claude reads the whole timestamped transcript and returns trigger and uptake events, type, mechanism, confidence, before→after, quotes and a rationale. It never sees the participant's flags or the parser output, so agreement is meaningful. Quotes are checked against the transcript and unverifiable ones are marked. Model and effort: `SPARK_JUDGE_MODEL` (default `claude-opus-5-5`), `SPARK_JUDGE_EFFORT` (default `high`).
+**LLM judge** (`judge.py`). Claude reads the timestamped transcript and returns trigger and uptake events, type, mechanism, confidence, before→after, quotes and a rationale. It excludes participant flags and, by default, parser output; an optional hints mode is not independent. This judge and the codebook are unvalidated research baselines: agreement is not accuracy, and quote verification and spark definitions need further work. Model and effort: `SPARK_JUDGE_MODEL` (default `claude-opus-5-5`, availability not validated), `SPARK_JUDGE_EFFORT` (default `high`).
 
 ---
 
@@ -128,18 +197,21 @@ Where agent logs live: Codex `~/.codex/sessions/…/rollout-*.jsonl`; Claude Cod
 | "Run LLM judge" is disabled | Install `anthropic`, set `ANTHROPIC_API_KEY`, restart the server |
 | Port already in use | `python3 server.py --port 8800` |
 
-Data is stored locally in `data/` (sessions as JSON, recordings as MP4/WebM). It is git-ignored; back it up.
+App data is stored on the server host in `data/` (sessions in SQLite, recordings as MP4/WebM, task workspaces, and raw uploaded logs). Live Codex/Anthropic calls send relevant text and task context to their providers. Local app storage does not mean model inference is offline. Separately, Codex maintains runtime state under its configured Codex home. Include these data flows in study consent and retention decisions.
 
 ## Project layout
 
 ```
-server.py              web server + API (sessions, flags, recording upload/streaming, import, exports)
+server.py              web server + API (sessions, flags, SSE, workspace, recording, import, exports)
+storage.py             SQLite records, revisions, migration, runtime feed, full research exports
+codex_runtime.py       stdio app-server bridge, per-session workspace, approvals, interrupt/resume
 static/                pages: record (recorder), review, researcher (dashboard), index, session
 parsers.py             agent-log → timestamped events (Claude Code, Codex, chat JSON, zips)
 spark_parser.py        codebook parser          judge.py        LLM judge
 transcript.py          timestamped transcript   detector.py     before/after tracing
 config/                taxonomy, codebook rules, studies, personas
 tools/                 seed_demo.py, run_judge.py, import_dilemmas.py
+tests/                 storage/runtime/API regression tests, mock browser QA, opt-in live smoke
 ```
 
-An optional in-browser dilemma/trading chat study also exists (`/session`; its AI partner needs the API key).
+The integrated study is at `/session`; the runtime is selected explicitly when creating the session. The seven-category optional marker and the original post-study form remain in place; the larger annotation UX redesign is a subsequent milestone.

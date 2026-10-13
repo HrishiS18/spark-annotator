@@ -50,7 +50,7 @@ DILEMMA_MARKS = [
 
 def seed_dilemma():
     s = server.create_session({"study": "dilemma", "prompt_id": "d-moral-luck", "persona": "pushback",
-                               "participant_id": "DEMO-01", "condition": "ai"})
+                               "participant_id": "DEMO-01", "condition": "ai", "runtime": "demo"})
     server.advance(s, "pre", PRE)
     for role, text in DILEMMA_CHAT:
         server.add_event(s, role, text)

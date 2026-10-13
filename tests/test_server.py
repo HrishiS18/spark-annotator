@@ -27,7 +27,7 @@ class ServerTests(unittest.TestCase):
                         patch.object(server, "RECORDINGS", str(root / "recordings"))]
         for p in self.patches:
             p.start()
-        self.httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+        self.httpd = server.StudyHTTPServer(("127.0.0.1", 0), server.Handler)
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
         self.thread.start()
         self.base = f"http://127.0.0.1:{self.httpd.server_port}"

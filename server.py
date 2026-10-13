@@ -432,6 +432,12 @@ def candidates_csv():
 
 # --------------------------------------------------------------------------- HTTP
 
+class StudyHTTPServer(ThreadingHTTPServer):
+    # Browser SSE + file requests + rapid bookmarks can exceed the stdlib's
+    # small default accept backlog even during a single local session.
+    request_queue_size = 64
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "SparkAnnotator/0.2"
 
@@ -969,7 +975,7 @@ def main():
     a = ap.parse_args()
     get_store()
     print(f"Spark Annotator on http://{a.host}:{a.port} · SQLite storage · default runtime: Codex")
-    httpd = ThreadingHTTPServer((a.host, a.port), Handler)
+    httpd = StudyHTTPServer((a.host, a.port), Handler)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

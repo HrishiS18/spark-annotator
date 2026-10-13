@@ -1,1 +1,1 @@
-anthropic>=1.0  # optional: only needed for the LLM judge and the in-browser AI chat partner
+anthropic>=1.0  # optional: LLM judge / explicitly selected plain chat; Codex bridge is stdlib-only

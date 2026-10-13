@@ -9,7 +9,7 @@
 <body>
 <div class="landing">
   <div class="landing-head"><span id="logo"></span><h1 style="margin:0">Spark Annotator</h1><span id="parser-pill" class="status-pill live"></span></div>
-  <p class="muted" style="margin-top:4px">Participants work with their own AI agent while a floating <b>Flag</b> button stays on top of it and the screen is recorded. Afterwards they rewatch each flagged minute and annotate it, and a codebook parser reads the transcript turn by turn to find candidate sparks.</p>
+  <p class="muted" style="margin-top:4px">Work with a real Codex agent in the study interface, bookmark insights, and review the saved conversation afterwards. External-agent screen recording remains available as a separate workflow.</p>
 
   <div class="cards">
     <div class="card">
@@ -35,9 +35,9 @@
     </div>
   </div>
 
-  <details class="card" style="margin-top:16px">
-    <summary style="cursor:pointer"><b>In-browser conversation study</b> <span class="muted small">(moral dilemma / trading strategy with before &amp; after write-ups)</span></summary>
-    <p class="small muted">Runs the conversation inside this site instead of the participant's own agent. The AI partner needs an <code>ANTHROPIC_API_KEY</code> on the server (<span id="llm"></span>); everything else, including flagging and the parser, works without it. Open <a href="/record">/record</a> alongside it if you also want a screen recording.</p>
+  <details class="card" style="margin-top:16px" open>
+    <summary style="cursor:pointer"><b>Integrated agent study</b> <span class="muted small">(task → baseline → agent conversation → final answer → review)</span></summary>
+    <p class="small muted">Codex runs on this Mac with command execution and file tools, not just an LLM call. <span id="codex-status"></span> This is a localhost prototype, not a deployed study service. No API keys belong in this form.</p>
     <form id="start" style="max-width:480px">
       <label class="field"><span>Participant ID</span><input type="text" name="participant_id" placeholder="e.g. P014" required></label>
       <label class="field"><span>Study</span><select name="study"></select></label>
@@ -49,6 +49,12 @@
           <option value="human">Human partner (comparison group)</option>
         </select>
       </label>
+      <label class="field" id="runtime-field"><span>AI runtime</span><select name="runtime">
+        <option value="codex">Codex agent — real tools and workspace</option>
+        <option value="plain">Plain LLM chat — no tools (Anthropic)</option>
+        <option value="demo">Scripted demo — no live model</option>
+      </select></label>
+      <p class="small muted" id="llm"></p>
       <label class="field hidden" id="room-field"><span>Room code (both partners enter the same code)</span><input type="text" name="room" placeholder="e.g. BLUE7"></label>
       <button class="btn btn-primary" type="submit">Start in-browser session</button>
     </form>
@@ -67,7 +73,8 @@ document.getElementById("logo").innerHTML = icon("bulb");
 $$("[data-ic]").forEach((el) => (el.outerHTML = icon(el.dataset.ic)));
 const cfg = await config();
 $("#parser-pill").textContent = `Codebook parser v${cfg.codebook.version} · no API needed`;
-$("#llm").textContent = cfg.llm.live ? `currently connected: ${cfg.llm.model}` : "currently not set, so a scripted demo partner is used";
+$("#codex-status").textContent = cfg.runtime.installed ? `Installed: ${cfg.runtime.version}. Sign in with codex login if needed.` : "Codex is not installed on the execution host.";
+$("#llm").textContent = cfg.llm.live ? `Optional plain chat is configured: ${cfg.llm.model}.` : "Optional plain chat is not configured. It will report an error, not silently switch to demo.";
 
 $("#tax").innerHTML = cfg.taxonomy.types.map((t) => `
   <div class="tax" style="--tc:${TYPE_COLOR[t.key]}"><b>${icon(t.icon)}${esc(t.label)}</b>
@@ -92,6 +99,7 @@ function syncStudy() {
 }
 function syncCond() {
   $("#room-field").classList.toggle("hidden", f.condition.value !== "human");
+  $("#runtime-field").classList.toggle("hidden", f.condition.value === "human");
   f.room.required = f.condition.value === "human";
 }
 f.study.onchange = syncStudy; f.condition.onchange = syncCond; syncStudy(); syncCond();

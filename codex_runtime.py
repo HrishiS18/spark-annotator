@@ -81,11 +81,17 @@ class RpcClient:
     def close(self):
         self.closed = True
         if self.proc.poll() is None:
-            os.killpg(self.proc.pid, signal.SIGTERM)
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 self.proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                os.killpg(self.proc.pid, signal.SIGKILL)
+                try:
+                    os.killpg(self.proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 self.proc.wait(timeout=5)
         for stream in (self.proc.stdin, self.proc.stdout):
             try:

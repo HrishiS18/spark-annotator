@@ -20,10 +20,14 @@ from storage import Store
 from codex_runtime import RuntimeManager
 
 
-def allowed(approval, workspace):
+def allowed(approval, workspace, events):
     params = approval["params"]
     if approval["method"] == "item/fileChange/requestApproval":
-        return params.get("grantRoot") in (None, str(workspace))
+        item = next((e for e in events if e.get("meta", {}).get("runtime_item_id") == params.get("itemId")), {})
+        changes = item.get("meta", {}).get("item", {}).get("changes", [])
+        target = (workspace / "smoke.txt").resolve()
+        return (params.get("grantRoot") in (None, str(workspace)) and bool(changes)
+                and all((workspace / c["path"]).resolve() == target for c in changes))
     command = params.get("command", "")
     words = shlex.split(command)
     if len(words) == 3 and words[0] in ("/bin/zsh", "/bin/bash", "/bin/sh") and words[1] in ("-lc", "-c"):
@@ -53,7 +57,7 @@ def main():
                 saved = server.load(s["id"])
                 runtime = saved["runtime"]
                 for approval in runtime.get("approvals", []):
-                    decision = "accept" if allowed(approval, worker.workspace) else "decline"
+                    decision = "accept" if allowed(approval, worker.workspace, saved["events"]) else "decline"
                     worker.approve(approval["id"], decision)
                     print(json.dumps({"approval": approval["method"], "decision": decision}), flush=True)
                 if runtime.get("last_turn_status") or runtime.get("status") == "error":

@@ -7,6 +7,11 @@ const sid = new URLSearchParams(location.search).get("id");
 let cfg, S, study;
 let busy = false;
 let pollTimer = null;
+let eventStream = null;
+let connecting = false;
+let pendingMessage = null;
+let workspaceRefresh = null;
+const isCodex = () => S.runtime?.kind === "codex";
 const PHASE_LABEL = { pre: "Before", chat: "Conversation", post: "After", review: "Review", done: "Done" };
 const CHAT_ROLES = ["user", "assistant", "partner"];
 
@@ -18,7 +23,7 @@ const store = {
 
 async function load() {
   S = await api("GET", `/api/sessions/${sid}`);
-  study = cfg.studies.find((s) => s.key === S.study);
+  study = S.config_snapshot?.study || cfg.studies.find((s) => s.key === S.study);
 }
 
 // ------------------------------------------------------------------ shell
@@ -65,6 +70,8 @@ function banner(html) { $("#banner").innerHTML = html ? `<div class="banner">${h
 
 function route() {
   clearInterval(pollTimer);
+  eventStream?.close(); eventStream = null;
+  clearInterval(workspaceRefresh);
   closeMarkPopover();
   banner("");
   renderSteps();
@@ -112,7 +119,7 @@ function writingView() {
 
 // ------------------------------------------------------------------ chat
 
-function partnerName() { return S.condition === "human" ? "Partner" : "AI"; }
+function partnerName() { return S.condition === "human" ? "Partner" : isCodex() ? "Codex" : S.runtime?.kind === "demo" ? "Scripted demo" : "AI"; }
 
 function msgHTML(e) {
   const marks = S.marks.filter((m) => m.event_id === e.id && !m.deleted);
@@ -122,7 +129,13 @@ function msgHTML(e) {
     const t = k && typeByKey(cfg, k);
     return `<span class="mark-badge" title="${esc(t ? t.participant : "Marked")}">${icon(t ? t.icon : "bulb")}${t ? esc(t.label) : "Marked"}${n > 1 ? ` ×${n}` : ""}</span>`;
   }).join("");
-  const btn = `<button class="icon-btn mark-here" data-mark="${e.id}" title="Mark this message" aria-label="Mark this message">${icon("bulb")}</button>`;
+  const btn = e.id === "pending" ? "" : `<button class="icon-btn mark-here" data-mark="${e.id}" title="Mark this message" aria-label="Mark this message">${icon("bulb")}</button>`;
+  if (["tool_call", "tool_result"].includes(e.role)) {
+    const label = e.role === "tool_result" ? "Tool result" : ({ commandExecution: "Command", fileChange: "File changes", webSearch: "Web search" }[e.tool] || e.tool || "Tool");
+    return `<div class="msg msg-tool ${marks.length ? "marked" : ""}" data-id="${e.id}">${btn}
+      <details data-tool="${e.id}"><summary>${esc(label)} <span class="small muted">${esc(e.status || "")}</span>${badges}</summary>
+      <pre>${esc(e.text)}</pre>${e.output ? `<div class="small muted">Output</div><pre>${esc(e.output)}</pre>` : ""}</details></div>`;
+  }
   if (e.role === "user") {
     return `<div class="msg msg-user ${marks.length ? "marked" : ""}" data-id="${e.id}">${btn}${renderText(e.text)}
       ${badges ? `<div class="mark-badges" style="margin-top:6px">${badges}</div>` : ""}</div>`;
@@ -132,21 +145,29 @@ function msgHTML(e) {
 }
 
 function renderThread() {
-  const evs = S.events.filter((e) => CHAT_ROLES.includes(e.role));
+  const opened = new Set($$("details[open][data-tool]").map((el) => el.dataset.tool));
+  const evs = S.events.filter((e) => !e.meta?.superseded && (CHAT_ROLES.includes(e.role) || isCodex() && ["tool_call", "tool_result"].includes(e.role)));
   const intro = S.condition === "human"
     ? "You're paired with another participant. Say hello and start discussing the question."
     : "Start by telling your partner what you think about the question, or ask it anything.";
   $("#thread").innerHTML = evs.length ? evs.map(msgHTML).join("") : `<div class="empty-chat">${esc(intro)}</div>`;
+  $$("details[data-tool]").forEach((el) => { el.open = opened.has(el.dataset.tool); });
   $("#fab-count").textContent = S.marks.filter((m) => !m.deleted).length;
 }
 
 function scrollBottom() { const c = $("#content"); c.scrollTop = c.scrollHeight; }
 
 function chatView() {
-  $("#content").innerHTML = `<div class="narrow"><p class="instructions small">${esc(study.chat_instructions)}</p><div class="thread" id="thread"></div><div id="typing"></div></div>`;
+  $("#content").innerHTML = `<div class="narrow"><p class="instructions small">${esc(study.chat_instructions)}</p>
+    <div class="runtime-panel" id="runtime-panel"></div><div id="approvals"></div>
+    ${isCodex() ? `<details class="workspace-panel"><summary>Task workspace <span class="small muted">files live on the execution host</span></summary>
+      <p class="small muted">Only upload files you intend to share with the agent. Existing files are never overwritten.</p>
+      <label class="btn btn-sm">${icon("upload")} Add task file<input id="workspace-upload" type="file" hidden></label>
+      <button class="btn btn-sm btn-ghost" id="refresh-files">Refresh files</button><div id="workspace-files"></div><pre id="file-preview" class="hidden"></pre></details>` : ""}
+    <div class="thread" id="thread"></div><div id="typing"></div></div>`;
   $("#composer-wrap").classList.remove("hidden");
   $("#fab").classList.remove("hidden");
-  $("#top-actions").innerHTML = `<button class="btn btn-sm" id="finish">Finish conversation</button>`;
+  $("#top-actions").innerHTML = `${isCodex() ? `<button class="btn btn-sm" id="connect-agent">Reconnect</button><button class="btn btn-sm hidden" id="stop-agent">${icon("stop")} Stop agent</button>` : ""}<button class="btn btn-sm" id="finish">Finish conversation</button>`;
   $("#finish").onclick = async () => {
     if (!confirm("Finish the conversation and move on? You won't be able to send more messages.")) return;
     await advance();
@@ -155,6 +176,123 @@ function chatView() {
   scrollBottom();
   $("#input").focus();
   if (S.condition === "human") pollTimer = setInterval(pollPartner, 1500);
+  if (isCodex()) {
+    $("#connect-agent").onclick = connectAgent;
+    $("#stop-agent").onclick = async () => {
+      try { await api("POST", `/api/sessions/${sid}/runtime/interrupt`, {}); }
+      catch (err) { toast(err.message); }
+    };
+    $("#workspace-upload").onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        await api("POST", `/api/sessions/${sid}/workspace/files`, file, { "X-Filename": file.name });
+        await refreshFiles(); toast("Task file uploaded");
+      } catch (err) { toast(err.message); }
+      e.target.value = "";
+    };
+    $("#refresh-files").onclick = refreshFiles;
+    refreshFiles();
+    workspaceRefresh = setInterval(refreshFiles, 8000);
+    startStream();
+    connectAgent(); // initialization/resume only; never starts a model turn
+  }
+  renderRuntime();
+}
+
+function renderRuntime() {
+  const panel = $("#runtime-panel");
+  if (!panel) return;
+  if (!isCodex()) {
+    const mode = S.condition === "human" ? "Human partner" : S.runtime?.kind === "demo" ? "SCRIPTED DEMO — not a live model" : S.runtime?.kind === "legacy" ? "Legacy saved conversation — runtime configuration was not recorded" : "Plain LLM chat — no agent tools";
+    panel.innerHTML = `<span class="status-pill">${esc(mode)}</span>`;
+    $("#send").disabled = busy;
+    return;
+  }
+  const runtime = S.runtime;
+  const active = ["starting", "running", "awaiting_approval"].includes(runtime.status);
+  const status = connecting ? "connecting" : runtime.status || "disconnected";
+  panel.innerHTML = `<div class="row"><span class="status-pill">Codex agent · ${esc(status.replaceAll("_", " "))}</span>
+      <span class="small muted">${esc(runtime.model || "Configured model")} · ${esc(runtime.version || cfg.runtime.version || "")}</span></div>
+      <p class="small muted">Local development runtime. Commands operate on its task workspace, not automatically on your personal files.</p>
+      ${runtime.error ? `<div class="runtime-error" role="alert">${esc(runtime.error)}</div>` : ""}`;
+  $("#send").disabled = busy || active || connecting || !["ready", "interrupted", "failed"].includes(runtime.status);
+  $("#finish").disabled = busy || active || connecting;
+  $("#stop-agent").classList.toggle("hidden", !active);
+  $("#stop-agent").disabled = runtime.status === "starting";
+  $("#connect-agent").disabled = active || connecting;
+  $("#connect-agent").classList.toggle("hidden", runtime.status === "ready" && !runtime.error);
+  $("#workspace-upload").disabled = active || connecting;
+  const approvals = runtime.approvals || [];
+  $("#approvals").innerHTML = approvals.map((a) => {
+    const item = S.events.find((e) => e.meta?.runtime_item_id === a.params.itemId);
+    const description = a.params.command || item?.text || a.params.reason || "The agent requested permission.";
+    return `<div class="approval-card" data-approval="${a.id}"><h3>Agent approval required</h3>
+      <pre>${esc(description)}</pre>${a.params.reason ? `<p>${esc(a.params.reason)}</p>` : ""}
+      <p class="small muted">Approval can authorize access beyond the command's normal sandbox. Decline anything unrelated to the task.</p>
+      <button class="btn btn-primary btn-sm" data-decision="accept">Allow once</button>
+      <button class="btn btn-sm" data-decision="decline">Decline</button></div>`;
+  }).join("");
+  $$("[data-approval]").forEach((card) => $$('[data-decision]', card).forEach((button) => {
+    button.onclick = async () => {
+      button.disabled = true;
+      try { await api("POST", `/api/sessions/${sid}/runtime/approval`, { id: card.dataset.approval, decision: button.dataset.decision }); }
+      catch (err) { toast(err.message); button.disabled = false; }
+    };
+  }));
+}
+
+async function connectAgent() {
+  if (connecting || S.phase !== "chat") return;
+  connecting = true; renderRuntime();
+  try { S.runtime = await api("POST", `/api/sessions/${sid}/runtime/connect`, {}); }
+  catch (err) { S.runtime.status = "error"; S.runtime.error = err.message; }
+  finally { connecting = false; renderRuntime(); }
+}
+
+function startStream() {
+  eventStream?.close();
+  eventStream = new EventSource(`/api/sessions/${sid}/stream`);
+  eventStream.addEventListener("session", (event) => {
+    if (S.phase !== "chat") return;
+    const update = JSON.parse(event.data);
+    const atBottom = $("#content").scrollHeight - $("#content").scrollTop - $("#content").clientHeight < 100;
+    S.events = update.events;
+    if (busy && pendingMessage && !S.events.some((e) => e.meta?.client_message_id === pendingMessage.id)) {
+      S.events.push({ id: "pending", role: "user", text: pendingMessage.text });
+    }
+    S.runtime = update.runtime;
+    S._revision = update.revision;
+    renderThread(); renderRuntime();
+    if (atBottom) scrollBottom();
+    $("#stream-status")?.remove();
+  });
+  eventStream.onerror = () => {
+    if (!$("#stream-status")) panelNotice("Connection interrupted; reconnecting. Saved messages are retained.");
+  };
+}
+
+function panelNotice(text) {
+  const notice = document.createElement("p"); notice.id = "stream-status"; notice.className = "small muted";
+  notice.textContent = text; $("#runtime-panel")?.appendChild(notice);
+}
+
+async function refreshFiles() {
+  if (!$("#workspace-files") || !isCodex()) return;
+  try {
+    const files = await api("GET", `/api/sessions/${sid}/workspace/files`);
+    $("#workspace-files").innerHTML = files.length ? files.map((file) => `<div class="workspace-file row">
+      <button class="btn btn-sm btn-ghost grow" data-preview="${esc(file.path)}">${esc(file.path)}</button>
+      <span class="small muted">${file.bytes} bytes</span><a class="btn btn-sm" href="/api/sessions/${sid}/workspace/file?path=${encodeURIComponent(file.path)}">Download</a></div>`).join("") : `<p class="small muted">No files yet.</p>`;
+    $$('[data-preview]').forEach((button) => button.onclick = async () => {
+      const response = await fetch(`/api/sessions/${sid}/workspace/file?path=${encodeURIComponent(button.dataset.preview)}`);
+      if (!response.ok) return toast("Could not open that file");
+      const type = response.headers.get("Content-Type") || "";
+      if (!/text|json|csv|javascript|xml/.test(type)) return toast("Binary file: use Download to open it");
+      $("#file-preview").textContent = (await response.text()).slice(0, 100000);
+      $("#file-preview").classList.remove("hidden");
+    });
+  } catch (err) { $("#workspace-files").textContent = err.message; }
 }
 
 let composeStart = null;
@@ -170,21 +308,27 @@ $("#composer").addEventListener("submit", async (e) => {
   e.preventDefault();
   const ta = $("#input");
   const text = ta.value.trim();
-  if (!text || busy) return;
+  if (!text || busy || $("#send").disabled) return;
   busy = true;
   $("#send").disabled = true;
   const compose_ms = composeStart ? Date.now() - composeStart : null;
   composeStart = null;
+  const messageId = pendingMessage?.text === text ? pendingMessage.id : crypto.randomUUID();
+  pendingMessage = { id: messageId, text };
   ta.value = "";
   ta.style.height = "auto";
   // optimistic render
   S.events.push({ id: "pending", role: "user", text });
   renderThread();
-  if (S.condition !== "human") $("#typing").innerHTML = `<div class="msg msg-ai"><div class="who">${partnerName()}</div><span class="typing"><i></i><i></i><i></i></span></div>`;
+  if (S.condition !== "human" && !isCodex()) $("#typing").innerHTML = `<div class="msg msg-ai"><div class="who">${partnerName()}</div><span class="typing"><i></i><i></i><i></i></span></div>`;
   scrollBottom();
   try {
-    const res = await api("POST", `/api/sessions/${sid}/message`, { text, compose_ms });
-    S.events = S.events.filter((x) => x.id !== "pending").concat(res.events);
+    const res = await api("POST", `/api/sessions/${sid}/message`, { text, compose_ms, client_message_id: messageId });
+    const events = new Map(S.events.filter((x) => x.id !== "pending").map((x) => [x.id, x]));
+    res.events.forEach((event) => { if (!events.has(event.id)) events.set(event.id, event); });
+    S.events = [...events.values()];
+    if (res.runtime) S.runtime = res.runtime;
+    pendingMessage = null;
   } catch (err) {
     S.events = S.events.filter((x) => x.id !== "pending");
     ta.value = text;
@@ -194,6 +338,7 @@ $("#composer").addEventListener("submit", async (e) => {
   busy = false;
   $("#send").disabled = false;
   renderThread();
+  renderRuntime();
   scrollBottom();
   ta.focus();
 });
@@ -281,14 +426,14 @@ function externalView() {
 
 // ------------------------------------------------------------------ review
 
-const reviewable = () => S.events.filter((e) => CHAT_ROLES.includes(e.role) || (S.external && e.role !== "thinking"));
+const reviewable = () => S.events.filter((e) => CHAT_ROLES.includes(e.role) || ((S.external || isCodex()) && e.role !== "thinking"));
 
 function contextHTML(m) {
   const evs = reviewable();
   let i = evs.findIndex((e) => e.id === m.event_id);
   if (i < 0) return `<div class="ctx muted">This mark isn't attached to a message.</div>`;
   const slice = evs.slice(Math.max(0, i - 2), i + 3);
-  const label = (e) => ({ user: "You", assistant: S.external ? "Agent" : "AI", partner: "Partner", tool_call: `Agent ran ${e.tool || "a tool"}`, tool_result: "Tool output", system: "System" }[e.role] || e.role);
+  const label = (e) => ({ user: "You", assistant: S.external ? "Agent" : partnerName(), partner: "Partner", tool_call: `Agent ran ${e.tool || "a tool"}`, tool_result: "Tool output", system: "System" }[e.role] || e.role);
   return `<div class="ctx">${slice.map((e) => {
     const anchor = e.id === m.event_id;
     let t = esc(anchor ? e.text : e.text.slice(0, 420) + (e.text.length > 420 ? "…" : ""));

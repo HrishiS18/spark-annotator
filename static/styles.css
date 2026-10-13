@@ -423,6 +423,18 @@ details.box summary { cursor: pointer; font-weight: 580; }
 }
 .steps-list { padding-left: 20px; margin: 4px 0 0; display: grid; gap: 8px; font-size: 14px; }
 details.card > summary { list-style-position: outside; }
+.runtime-panel { margin: 12px 0 20px; }
+.runtime-panel p { margin: 8px 0; }
+.runtime-error { padding: 12px; border: 1px solid var(--border-strong); border-radius: 10px; color: var(--text); }
+.workspace-panel { border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 22px; }
+.workspace-panel summary { cursor: pointer; font-weight: 600; }
+.workspace-file { margin-top: 8px; }
+.workspace-file .grow { text-align: left; overflow-wrap: anywhere; }
+.workspace-panel pre, .approval-card pre, .msg-tool pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 340px; overflow: auto; font: 12px/1.5 ui-monospace, Menlo, monospace; }
+.approval-card { border: 1px solid var(--accent-ring); background: var(--accent-soft); padding: 16px; border-radius: 12px; margin-bottom: 16px; }
+.approval-card h3 { margin-top: 0; }
+.msg-tool { background: var(--bg-soft); border: 1px solid var(--border); border-radius: 12px; padding: 14px 38px 14px 14px; position: relative; margin-bottom: 12px; }
+.msg-tool summary { cursor: pointer; }
 
 /* ---------- browser recorder + floating Flag button (Document Picture-in-Picture) */
 .check-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 14px; flex-wrap: wrap; }
