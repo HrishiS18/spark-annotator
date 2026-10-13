@@ -89,9 +89,12 @@ class Store:
                 by_kind.setdefault(record["kind"], []).append(json.loads(record["document"]))
         s["events"] = by_kind.get("event", [])
         reviews = {r["id"]: r["review"] for r in by_kind.get("review", [])}
+        drafts = {r["id"]: r["review_draft"] for r in by_kind.get("review_draft", [])}
         s["marks"] = by_kind.get("bookmark", [])
         for m in s["marks"]:
             m["review"] = reviews.get(m["id"])
+            if m["id"] in drafts:
+                m["review_draft"] = drafts[m["id"]]
         responses = {r["id"]: r["response"] for r in by_kind.get("candidate_response", [])}
         s["candidates"] = by_kind.get("prediction", [])
         for c in s["candidates"]:
@@ -143,15 +146,17 @@ class Store:
                    (sid, revision, encode(metadata), revision, encode(metadata)))
         # Predictions from a rerun are different records, never a rewrite of a
         # participant's answer to an earlier prediction.
-        for kind in ("event", "bookmark", "prediction", "review", "candidate_response"):
+        for kind in ("event", "bookmark", "prediction", "review", "review_draft", "candidate_response"):
             db.execute("UPDATE records SET active=0 WHERE session_id=? AND kind=?", (sid, kind))
         for i, e in enumerate(s.get("events", [])):
             self._record(db, sid, "event", e["id"], e, i)
         for i, m in enumerate(s.get("marks", [])):
-            bookmark = {k: v for k, v in m.items() if k != "review"}
+            bookmark = {k: v for k, v in m.items() if k not in ("review", "review_draft")}
             self._record(db, sid, "bookmark", m["id"], bookmark, i)
             if m.get("review") is not None:
                 self._record(db, sid, "review", m["id"], {"id": m["id"], "review": m["review"]}, i)
+            if m.get("review_draft") is not None:
+                self._record(db, sid, "review_draft", m["id"], {"id": m["id"], "review_draft": m["review_draft"]}, i)
         for i, c in enumerate(s.get("candidates", [])):
             self._record(db, sid, "prediction", c["id"],
                          {k: v for k, v in c.items() if k != "participant_response"}, i)
