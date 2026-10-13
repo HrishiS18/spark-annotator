@@ -3,10 +3,12 @@
     python3 server.py                  # http://127.0.0.1:8765
     python3 server.py --host 0.0.0.0   # let lab machines on the LAN connect
 
-Storage is one JSON file per session under data/sessions/. No database.
+Storage is transactional SQLite. Original data/sessions/*.json files are retained
+as read-only migration backups. Codex execution is a localhost-only prototype.
 """
 
 import argparse
+import copy
 import csv
 import io
 import json
@@ -26,9 +28,11 @@ import judge
 import llm
 import parsers
 import transcript
+import storage
+from codex_runtime import RuntimeManager, RuntimeUnavailable
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-DATA = os.path.join(ROOT, "data")
+DATA = os.path.abspath(os.environ.get("SPARK_DATA_DIR", os.path.join(ROOT, "data")))
 SESSIONS = os.path.join(DATA, "sessions")
 UPLOADS = os.path.join(DATA, "uploads")
 RECORDINGS = os.path.join(DATA, "recordings")
@@ -47,6 +51,25 @@ PERSONAS = {p["key"]: p for p in _load_config("personas.json")["personas"]}
 STUDIES = {s["key"]: s for s in _load_config("studies.json")["studies"]}
 CODEBOOK = _load_config("spark_codebook.json")
 LOCK = threading.RLock()
+_STORE = None
+_RUNTIME = None
+
+
+def get_store():
+    global _STORE
+    with LOCK:
+        if _STORE is None:
+            _STORE = storage.Store(os.path.join(DATA, "study.sqlite3"))
+            _STORE.migrate_legacy(SESSIONS)
+        return _STORE
+
+
+def get_runtime():
+    global _RUNTIME
+    with LOCK:
+        if _RUNTIME is None:
+            _RUNTIME = RuntimeManager(get_store(), DATA)
+        return _RUNTIME
 
 
 def now():
@@ -67,27 +90,17 @@ def _path(sid):
 
 
 def load(sid):
-    with open(_path(sid)) as f:
-        return json.load(f)
+    _path(sid)  # preserve ID validation, not JSON-file persistence
+    return get_store().load(sid)
 
 
 def save(s):
-    p = _path(s["id"])
-    tmp = p + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(s, f, indent=1, ensure_ascii=False)
-    os.replace(tmp, p)
+    _path(s["id"])
+    get_store().save(s)
 
 
 def all_sessions():
-    out = []
-    for name in sorted(os.listdir(SESSIONS)):
-        if name.endswith(".json"):
-            try:
-                out.append(load(name[:-5]))
-            except (KeyError, ValueError):
-                pass
-    return out
+    return get_store().all_sessions()
 
 
 # --------------------------------------------------------------------------- session logic
@@ -109,6 +122,11 @@ def create_session(body):
     if persona not in PERSONAS:
         raise ValueError("unknown persona")
     condition = body.get("condition", "ai")
+    if condition not in ("ai", "human"):
+        raise ValueError("unknown partner condition")
+    runtime_kind = "external" if study.get("external") else "human" if condition == "human" else body.get("runtime", "codex")
+    if runtime_kind not in ("codex", "human", "external", "plain", "demo"):
+        raise ValueError("unknown runtime")
     iso, _ = now()
     order = phases_for(study)
     s = {
@@ -122,9 +140,16 @@ def create_session(body):
         "writing": {}, "events": [], "marks": [], "candidates": [],
         "detection": None, "trace": None, "codes": {}, "imports": [],
         "recording": None, "parse_turns": [],
+        "schema_version": 2, "analysis_runs": [],
+        "runtime": {"kind": runtime_kind, "status": "disconnected", "active_turn": None, "approvals": [],
+                    "model": os.environ.get("SPARK_CODEX_MODEL") or None,
+                    "effort": os.environ.get("SPARK_CODEX_EFFORT", "medium")},
     }
     if body.get("task"):
         s["prompt"] = dict(prompt, text=body["task"].strip()[:2000])
+    s["config_snapshot"] = {"study": copy.deepcopy(study), "task": copy.deepcopy(s["prompt"]),
+                            "persona": copy.deepcopy(PERSONAS[persona]), "taxonomy": copy.deepcopy(TAXONOMY),
+                            "runtime": copy.deepcopy(s["runtime"])}
     s["phases"][order[0]]["started_at"] = iso
     save(s)
     return s
@@ -145,7 +170,7 @@ def advance(s, phase, text=None):
 
 def add_event(s, role, text, **extra):
     iso, t = now()
-    ev = {"id": f"e{len(s['events']) + 1}", "ts": iso, "t": t, "role": role, "text": text,
+    ev = {"id": "ev_" + uuid.uuid4().hex, "ts": iso, "t": t, "role": role, "text": text,
           "tool": None, "meta": extra}
     s["events"].append(ev)
     return ev
@@ -166,7 +191,7 @@ def llm_history(s):
 
 
 def system_prompt(s):
-    p = PERSONAS[s["persona"]]["system"]
+    p = s.get("config_snapshot", {}).get("persona", PERSONAS[s["persona"]])["system"]
     return f"{p}\n\nThe person is thinking about this question:\n{s['prompt']['text']}"
 
 
@@ -177,16 +202,18 @@ def ai_reply(sid):
         sys_p = system_prompt(s)
     t0 = time.time()
     meta = {}
-    if llm.status()["live"]:
+    mode = s.get("runtime", {}).get("kind", "legacy")
+    if mode == "demo":
+        text = llm.demo_reply(s["persona"], hist)
+        meta = {"demo": True}
+    elif llm.status()["live"]:
         try:
             text = llm.chat(sys_p, hist)
             meta = {"model": llm.MODEL}
         except llm.LLMError as exc:
-            text = f"(The AI partner is unavailable right now: {exc}. Please tell the researcher.)"
-            meta = {"error": str(exc)}
+            raise RuntimeUnavailable("Plain LLM chat failed; no demo reply was substituted.") from exc
     else:
-        text = llm.demo_reply(s["persona"], hist)
-        meta = {"demo": True}
+        raise RuntimeUnavailable("Plain LLM chat is not configured. Choose Codex or an explicitly labeled demo session.")
     meta["latency_s"] = round(time.time() - t0, 2)
     with LOCK:
         s = load(sid)
@@ -212,7 +239,7 @@ def run_detection(sid):
         s = load(sid)
         s["detection"] = {"status": "running", "started_at": now()[0]}
         save(s)
-        events, ctx = list(s["events"]), context_for(s)
+        events, ctx = [e for e in s["events"] if not e.get("meta", {}).get("superseded")], context_for(s)
     try:
         cands, meta, turns = detector.detect(events, ctx)
         status = "done"
@@ -220,21 +247,17 @@ def run_detection(sid):
         cands, meta, turns, status = [], {"error": repr(exc)}, [], "error"
     with LOCK:
         s = load(sid)
-        _merge_candidates(s, cands, "codebook")
+        _merge_candidates(s, cands, "codebook", meta)
         s["parse_turns"] = turns
         s["detection"] = dict(meta, status=status, finished_at=now()[0], n=len(cands))
         save(s)
 
 
-def _merge_candidates(s, cands, source):
-    """Replace one source's candidates, keeping ids and participant answers where they match."""
-    old = {(c["trigger_event_id"], c["type"]): c for c in s["candidates"] if c.get("source", "codebook") == source}
-    for c in cands:
-        prev = old.get((c["trigger_event_id"], c["type"]))
-        c["source"] = source
-        c["id"] = prev["id"] if prev else new_id("c")
-        c["participant_response"] = prev.get("participant_response") if prev else None
-    s["candidates"] = [c for c in s["candidates"] if c.get("source", "codebook") != source] + cands
+def _merge_candidates(s, cands, source, metadata=None):
+    """Every analysis run has separate predictions; historical answers stay intact."""
+    configuration = CODEBOOK if source == "codebook" else {
+        "model": llm.JUDGE_MODEL, "effort": llm.JUDGE_EFFORT, "hints": (s.get("judge") or {}).get("hints", False)}
+    return storage.record_analysis_run(s, source, cands, metadata or {}, configuration)
 
 
 def run_judge(sid, hints=False):
@@ -252,7 +275,7 @@ def run_judge(sid, hints=False):
     with LOCK:
         s = load(sid)
         if cands is not None:
-            _merge_candidates(s, cands, "judge")
+            _merge_candidates(s, cands, "judge", meta)
         s["judge"] = dict(s.get("judge") or {}, **meta, status=status, error=err, finished_at=now()[0],
                           n=len(cands) if cands is not None else None)
         save(s)
@@ -410,7 +433,7 @@ def candidates_csv():
 # --------------------------------------------------------------------------- HTTP
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "SparkAnnotator/0.1"
+    server_version = "SparkAnnotator/0.2"
 
     def log_message(self, fmt, *args):
         if os.environ.get("SPARK_QUIET") != "1":
@@ -431,13 +454,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _json(self):
         n = int(self.headers.get("Content-Length") or 0)
+        if n < 0 or n > 2 * 1024 * 1024:
+            raise ValueError("JSON request too large")
         if not n:
             return {}
         return json.loads(self.rfile.read(n))
 
     def _static(self, rel):
         path = os.path.normpath(os.path.join(STATIC, rel))
-        if not path.startswith(STATIC) or not os.path.isfile(path):
+        if os.path.commonpath([STATIC, path]) != STATIC or not os.path.isfile(path):
             return self._send(404, {"error": "not found"})
         with open(path, "rb") as f:
             data = f.read()
@@ -448,9 +473,27 @@ class Handler(BaseHTTPRequestHandler):
         parts = [p for p in url.path.split("/") if p]
         query = parse_qs(url.query)
         try:
+            # Commands must not be triggerable by a random website visiting the
+            # localhost development server (including DNS rebinding).
+            host = self.headers.get("Host", "")
+            if self.server.server_address[0] in ("127.0.0.1", "::1"):
+                allowed = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
+                if host not in allowed:
+                    return self._send(403, {"error": "Invalid local host"})
+            origin = self.headers.get("Origin")
+            if origin and urlparse(origin).netloc != host:
+                return self._send(403, {"error": "Cross-origin access is not allowed"})
             return self._dispatch(method, parts, query)
+        except storage.ConflictError as exc:
+            return self._send(409, {"error": str(exc)})
+        except RuntimeUnavailable as exc:
+            return self._send(503, {"error": str(exc)})
+        except FileExistsError:
+            return self._send(409, {"error": "A file with that name already exists; nothing was overwritten."})
         except KeyError:
             return self._send(404, {"error": "not found"})
+        except StopIteration:
+            return self._send(404, {"error": "record not found"})
         except (ValueError, json.JSONDecodeError) as exc:
             return self._send(400, {"error": str(exc)})
 
@@ -562,6 +605,35 @@ class Handler(BaseHTTPRequestHandler):
                 pass  # the player cancels range requests while seeking
 
     # ---- routes
+    def _stream(self, sid, query):
+        load(sid)
+        after = max(0, int(self.headers.get("Last-Event-ID") or (query.get("after") or ["0"])[0]))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.end_headers()
+        def emit(cursor=None):
+            s = load(sid)
+            payload = {"events": s["events"], "runtime": s.get("runtime"), "revision": s["_revision"]}
+            prefix = f"id: {cursor}\n" if cursor is not None else ""
+            self.wfile.write((prefix + "event: session\ndata: " + json.dumps(payload, ensure_ascii=False) + "\n\n").encode())
+            self.wfile.flush()
+        try:
+            emit()  # refreshing recovers the saved projection, not a new turn
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline and not getattr(self.server, "stream_shutdown", False):
+                messages = get_store().feed(sid, after)
+                if messages:
+                    after = messages[-1]["seq"]
+                    emit(after)
+                else:
+                    self.wfile.write(b": heartbeat\n\n")
+                    self.wfile.flush()
+                time.sleep(0.15)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def _dispatch(self, method, parts, query):
         pages = {"": "index.html", "session": "session.html", "researcher": "researcher.html", "review": "review.html",
                  "record": "record.html"}
@@ -578,6 +650,7 @@ class Handler(BaseHTTPRequestHandler):
                 "taxonomy": TAXONOMY, "studies": list(STUDIES.values()),
                 "personas": [{"key": p["key"], "label": p["label"]} for p in PERSONAS.values()],
                 "llm": llm.status(),
+                "runtime": get_runtime().status(),
                 "codebook": {"version": CODEBOOK["version"], "rules": len(CODEBOOK["rules"])},
                 "judge": {**llm.status(), "model": llm.JUDGE_MODEL, "effort": llm.JUDGE_EFFORT},
             })
@@ -585,7 +658,11 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET":
                 return self._send(200, [summary_row(s) for s in sorted(all_sessions(), key=lambda s: s["created_at"], reverse=True)])
             if method == "POST":
-                return self._send(201, create_session(self._json()))
+                body = self._json()
+                if (not STUDIES.get(body.get("study"), {}).get("external") and body.get("condition", "ai") == "ai"
+                        and body.get("runtime", "codex") == "codex" and self.server.server_address[0] not in ("127.0.0.1", "::1")):
+                    raise RuntimeUnavailable("Codex execution is localhost-only until deployment isolation and authentication are implemented.")
+                return self._send(201, create_session(body))
         if api == ["upload"] and method == "POST":
             name = os.path.basename(self.headers.get("X-Filename") or "upload.jsonl")
             n = int(self.headers.get("Content-Length") or 0)
@@ -613,6 +690,33 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
     def _session_route(self, method, sid, rest, query):
+        if rest[:1] == ["runtime"] and self.server.server_address[0] not in ("127.0.0.1", "::1"):
+            raise RuntimeUnavailable("Codex execution is only enabled on localhost in this prototype.")
+        if method == "GET" and rest == ["stream"]:
+            return self._stream(sid, query)
+        if method == "GET" and rest == ["workspace", "files"]:
+            load(sid)
+            return self._send(200, get_runtime().files(sid))
+        if method == "GET" and rest == ["workspace", "file"]:
+            load(sid)
+            path = get_runtime().file(sid, (query.get("path") or [""])[0])
+            if path.stat().st_size > 20 * 1024 * 1024:
+                raise ValueError("File too large for this prototype's preview/download")
+            ctype = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
+            return self._send(200, path.read_bytes(), ctype, {"Content-Disposition": "attachment; filename*=UTF-8''" + __import__("urllib.parse", fromlist=["quote"]).quote(path.name), "X-Content-Type-Options": "nosniff"})
+        if method == "POST" and rest == ["workspace", "files"]:
+            s = load(sid)
+            if s["phase"] not in ("pre", "chat") or s.get("runtime", {}).get("kind") != "codex":
+                raise ValueError("Workspace uploads are only available before/during Codex conversations")
+            if s["runtime"].get("active_turn") or s["runtime"].get("status") == "starting":
+                raise ValueError("Wait for the agent to finish before changing its files")
+            n = int(self.headers.get("Content-Length") or 0)
+            if n < 0 or n > 5 * 1024 * 1024:
+                raise ValueError("Maximum workspace upload is 5 MB")
+            data = self.rfile.read(n)
+            if len(data) != n:
+                raise ValueError("Upload interrupted")
+            return self._send(201, get_runtime().upload(sid, self.headers.get("X-Filename", ""), data))
         if method == "GET" and not rest:
             s = load(sid)
             s["analysis"] = analysis(s)
@@ -638,7 +742,7 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and rest == ["export.json"]:
             s = load(sid)
             s["analysis"] = analysis(s)
-            return self._send(200, json.dumps(s, indent=1, ensure_ascii=False), "application/json",
+            return self._send(200, s, "application/json",
                               {"Content-Disposition": f"attachment; filename={sid}.json"})
 
         body = self._json() if method in ("POST", "PATCH") else {}
@@ -678,6 +782,8 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and rest == ["advance"]:
             with LOCK:
                 s = load(sid)
+                if s.get("runtime", {}).get("active_turn") or s.get("runtime", {}).get("status") == "starting":
+                    raise ValueError("Stop the agent or wait for it to finish before leaving the conversation")
                 nxt = advance(s, body.get("phase"), body.get("text"))
                 save(s)
             if nxt == "review":
@@ -690,6 +796,17 @@ class Handler(BaseHTTPRequestHandler):
             text = (body.get("text") or "").strip()
             if not text:
                 raise ValueError("empty message")
+            s = load(sid)
+            if s.get("runtime", {}).get("kind") == "codex":
+                if self.server.server_address[0] not in ("127.0.0.1", "::1"):
+                    raise RuntimeUnavailable("Codex execution is localhost-only")
+                if s["phase"] != "chat":
+                    raise ValueError("conversation phase is over")
+                client_id = body.get("client_message_id")
+                if not isinstance(client_id, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{8,100}", client_id):
+                    raise ValueError("A stable client_message_id is required")
+                ev = get_runtime().get(sid).message(text, client_id, body.get("compose_ms"))
+                return self._send(202, {"events": [ev], "runtime": load(sid)["runtime"]})
             with LOCK:
                 s = load(sid)
                 if s["phase"] != "chat":
@@ -704,6 +821,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"events": [ev]})
             reply = ai_reply(sid)
             return self._send(200, {"events": [ev, reply]})
+
+        if method == "POST" and rest == ["runtime", "connect"]:
+            s = load(sid)
+            if s["phase"] != "chat":
+                raise ValueError("Codex can only connect during the conversation phase")
+            get_runtime().get(sid)
+            return self._send(200, load(sid)["runtime"])
+        if method == "POST" and rest == ["runtime", "interrupt"]:
+            get_runtime().get(sid).interrupt()
+            return self._send(200, {"ok": True})
+        if method == "POST" and rest == ["runtime", "approval"]:
+            s = load(sid)
+            if s["phase"] != "chat":
+                raise ValueError("Conversation phase is over")
+            get_runtime().get(sid).approve(body.get("id"), body.get("decision"))
+            return self._send(200, {"ok": True})
 
         if method == "POST" and rest == ["marks"]:
             iso, t = now()
@@ -740,6 +873,8 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 s = load(sid)
                 m = next(m for m in s["marks"] if m["id"] == rest[1])
+                if body.get("event_id") is not None and body["event_id"] not in {e["id"] for e in s["events"]}:
+                    raise ValueError("Unknown event anchor")
                 for key in ("quick_type", "event_id", "deleted"):
                     if key in body:
                         m[key] = body[key]
@@ -810,21 +945,14 @@ class Handler(BaseHTTPRequestHandler):
                 for e in ev:
                     e["meta"]["source"] = mem
                 events += ev
-            if body.get("append"):
-                events = load(sid)["events"] + events
-            events.sort(key=lambda e: (e.get("t") is None, e.get("t") or 0))
-            for i, e in enumerate(events):
-                e["id"] = f"e{i + 1}"
             with LOCK:
                 s = load(sid)
-                s["events"] = events
-                for m in s["marks"]:
-                    m["event_id"] = None
-                s["candidates"] = []
-                s["judge"] = None
-                parsers.align_marks(s["marks"], events)
+                if s.get("runtime", {}).get("kind") == "codex":
+                    raise ValueError("Live Codex transcripts cannot be replaced with imported logs. Create an external session instead.")
+                imported = storage.import_events(s, events, name, bool(body.get("append")))
+                parsers.align_marks(s["marks"], imported)
                 s["imports"].append({"at": now()[0], "file": name, "members": members, "meta": meta,
-                                     "events": len(events)})
+                                     "events": len(imported)})
                 save(s)
             if s["phase"] in ("review", "done") and events:
                 detect_async(sid)
@@ -839,10 +967,18 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
     a = ap.parse_args()
-    st = llm.status()
-    mode = f"LIVE ({st['model']})" if st["live"] else f"DEMO ({st['reason']})"
-    print(f"Spark Annotator on http://{a.host}:{a.port}  ·  LLM: {mode}")
-    ThreadingHTTPServer((a.host, a.port), Handler).serve_forever()
+    get_store()
+    print(f"Spark Annotator on http://{a.host}:{a.port} · SQLite storage · default runtime: Codex")
+    httpd = ThreadingHTTPServer((a.host, a.port), Handler)
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.stream_shutdown = True
+        httpd.server_close()
+        if _RUNTIME:
+            _RUNTIME.close()
 
 
 if __name__ == "__main__":
