@@ -37,7 +37,7 @@
 
   <details class="card" style="margin-top:16px" open>
     <summary style="cursor:pointer"><b>Integrated agent study</b> <span class="muted small">(task → baseline → agent conversation → final answer → review)</span></summary>
-    <p class="small muted">Codex runs on this Mac with command execution and file tools, not just an LLM call. <span id="codex-status"></span> This is a localhost prototype, not a deployed study service. No API keys belong in this form.</p>
+    <p class="small muted">Codex runs on this Mac with command execution and file tools. <span id="codex-status"></span> After the conversation, the task, baseline and visible transcript are sent automatically to a separate LLM judge to suggest moments for review. Bookmarks and annotations are excluded. This uses provider/account usage; no API keys belong in this form. Local prototype, not a deployed study service.</p>
     <form id="start" style="max-width:480px">
       <label class="field"><span>Participant ID</span><input type="text" name="participant_id" placeholder="e.g. P014" required></label>
       <label class="field"><span>Study</span><select name="study"></select></label>
@@ -72,7 +72,7 @@ import { api, icon, esc, config, TYPE_COLOR, $, $$ } from "/static/common.js";
 document.getElementById("logo").innerHTML = icon("bulb");
 $$("[data-ic]").forEach((el) => (el.outerHTML = icon(el.dataset.ic)));
 const cfg = await config();
-$("#parser-pill").textContent = `LLM judge v${cfg.judge.version} · researcher-triggered`;
+$("#parser-pill").textContent = `LLM judge v${cfg.judge.version} · ${cfg.judge.automatic ? 'automatic suggestions' : 'manual judging'}`;
 $("#codex-status").textContent = cfg.runtime.installed ? `Installed: ${cfg.runtime.version}. Sign in with codex login if needed.` : "Codex is not installed on the execution host.";
 $("#llm").textContent = cfg.llm.live ? `Optional plain chat is configured: ${cfg.llm.model}.` : "Optional plain chat is not configured. It will report an error, not silently switch to demo.";
 

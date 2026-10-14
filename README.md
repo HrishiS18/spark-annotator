@@ -45,7 +45,11 @@ Existing legacy annotations remain preserved; they are not automatically convert
 
 The old lexical novelty/phrase rules, copying threshold, default-to-spark rule, automatic before/after tracing, and `/detect`, `/trace`, `parse.csv` workflows are removed. Historical results remain in research exports. `parsers.py` still normalizes Codex/Claude/chat log formats; it does **not** infer sparks.
 
-Run the judge explicitly from the researcher dashboard after conversation completion. Importing a log or ending a conversation does not start paid inference.
+Ending the conversation starts the judge automatically in the background, while participants write their final answer and independently annotate bookmarks. Suggestions remain hidden until the independent pass is locked. External recordings wait for an imported transcript, then start automatically. Reopening an unfinished review catches up a missed job.
+
+One automatic run per unchanged transcript/configuration; refreshes, flags, and annotations do not trigger repeat calls. Errors require an explicit participant/researcher retry. At most two judge jobs run concurrently. Participants wait for an active job before finishing the suggested-review stage; after failure or missing transcript they may finish without suggestions. Missing transcript, queued/running, unavailable, failure, completed-empty, and all-suggestions-reviewed are distinct UI states.
+
+Automatic judging transmits task/baseline/transcript to the configured provider and consumes account usage. Set `SPARK_AUTO_JUDGE=0` to require manual judging. Scripted demo mode never starts live judging automatically. Researcher buttons remain available for reruns. Startup never bulk-judges old sessions or resumes interrupted inference automatically.
 
 The local default uses your existing **Codex login**, model `gpt-5.6-sol`, in a separate ephemeral, read-only process with tools/connectors disabled and study records fenced off. The judge sees only supplied task, baseline, and visible transcript, not bookmarks, reviews, exposure snapshots, prior predictions, researcher codes, or hidden reasoning. Local inference still sends this text to the provider and consumes account usage.
 
@@ -64,6 +68,7 @@ Long transcripts use explicit overlapping windows; reports record whether scope 
 Settings:
 
 - `SPARK_JUDGE_PROVIDER=codex` (default; local macOS prototype).
+- `SPARK_AUTO_JUDGE=1` (default; set `0` to disable automatic generation).
 - `SPARK_JUDGE_MODEL`, `SPARK_JUDGE_EFFORT` (default medium).
 - `SPARK_JUDGE_MAX_INPUT_TOKENS` (default 60000), `SPARK_JUDGE_TIMEOUT` (default 180 seconds).
 - Optional legacy API adapter: `SPARK_JUDGE_PROVIDER=anthropic`, install `requirements.txt`, configure credentials and an available model on the host. This adapter has not been live-validated with the current account.
@@ -122,7 +127,7 @@ SPARK_QUIET=1 .venv/bin/python -m unittest discover -s tests -v
 node tests/browser_smoke.cjs
 ```
 
-Browser QA requires Playwright plus Chrome/Chromium; optionally set `NODE_PATH` and `SPARK_CHROME_PATH`. Covers agent controls, offline bookmark recovery, exposure snapshots, autosave/reload, multi-event passages, missed moments, suggestion blinding, independent-pass locking, and exports.
+Browser QA requires Playwright plus Chrome/Chromium; optionally set `NODE_PATH` and `SPARK_CHROME_PATH`. Covers agent controls, offline bookmark recovery, exposure snapshots, autosave/reload, multi-event passages, missed moments, automatic suggestion generation without duplicate calls, blinding, failure/retry and missing/empty states, independent-pass locking, and exports.
 
 Live tests are separately opt-in, **synthetic only**, and consume account usage:
 

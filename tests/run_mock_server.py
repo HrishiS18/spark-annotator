@@ -14,6 +14,10 @@ server._RUNTIME = manager
 
 def fake_judge(session):
     """Explicitly synthetic predictions; never calls a model in browser QA."""
+    if session["participant_id"] == "TEST-JUDGE-ERROR" and session["judge"]["requested_by"] == "automatic":
+        raise server.llm.LLMError("Synthetic generation failure")
+    if session["participant_id"] in ("TEST-JUDGE-EMPTY","TEST-JUDGE-ERROR"):
+        return [], {"summary":"SYNTHETIC_EMPTY_RESULT","model":"TEST ONLY"}
     trigger = next(e for e in session["events"] if e["role"] == "assistant")
     return [{"source":"judge","start_event_id":trigger["id"],"end_event_id":trigger["id"],
              "trigger_event_id":trigger["id"],"uptake_event_id":"","type":"additive",
@@ -23,4 +27,6 @@ def fake_judge(session):
              "rationale":"SYNTHETIC_TEST_SUGGESTION","quotes_verified":True}], {"summary":"SYNTHETIC_TEST_SUMMARY","model":"TEST ONLY"}
 
 server.judge.run = fake_judge
+server.judge.status = lambda: {"live":True,"provider":"test","model":"TEST ONLY","version":server.judge.VERSION,
+                               "effort":"medium","cost_note":"Synthetic test fixture — no live inference."}
 server.main()

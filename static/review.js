@@ -5,12 +5,13 @@ import { BookmarkOutbox } from "/static/bookmarks.js";
 
 const params = new URLSearchParams(location.search), sid = params.get('id');
 const researcher = params.get('mode') === 'researcher';
-let cfg, S, video = null, t0 = 0, duration = 60, openId = null, selectedStart = null, outbox;
+let cfg, S, video = null, t0 = 0, duration = 60, openId = null, selectedStart = null, outbox, finishing = false;
 const forms = new Map();
 const eventById = id => S.events.find(e => e.id === id);
 const point = m => m.reference_t ?? m.t;
 const offset = t => t == null ? 0 : t - t0;
 const independentDone = () => !!S.independent_review;
+const judgeBusy = () => ['queued','running'].includes(S.judge?.status);
 const liveMarks = () => S.marks.filter(m => !m.deleted);
 const label = e => ({ user: 'You', assistant: S.runtime?.kind === 'codex' ? 'Codex' : 'Agent', partner: 'Partner', tool_call: 'Tool call', tool_result: 'Tool output' }[e.role] || e.role);
 
@@ -20,13 +21,21 @@ async function load() {
   duration = S.recording?.duration || Math.max(60, ...S.events.filter(e => e.t).map(e => offset(e.t) + 20));
 }
 
+async function prepareSuggestions() {
+  // Explicit idempotent action, not a GET side effect. Catches up unfinished
+  // reviews created before automatic generation was introduced.
+  if (!researcher && S.phase === 'review' && cfg.judge.automatic) {
+    await api('POST', `/api/sessions/${sid}/judge/ensure`, {});
+    await load();
+  }
+}
 function renderHeader() {
   $('#brand').innerHTML = `${icon('bulb')}<span>Spark review</span>`;
   $('#title').textContent = S.prompt.title;
   $('#meta').textContent = researcher ? 'Researcher view' : independentDone() ? 'Independent review locked' : 'Independent review · model suggestions hidden';
   $('#actions').innerHTML = researcher
-    ? `<button class="btn btn-sm" id="run-judge" ${cfg.judge.live ? '' : 'disabled'}>Run LLM judge</button><a class="btn btn-sm" href="/api/sessions/${sid}/export.json">Export</a><a class="btn btn-sm" href="/researcher#${sid}">Dashboard</a>`
-    : S.phase === 'review' ? `<button class="btn btn-primary btn-sm" id="finish">${independentDone() ? 'Finish session' : 'Finish independent review'}</button>` : '';
+    ? `<button class="btn btn-sm" id="run-judge" ${cfg.judge.live && !judgeBusy() ? '' : 'disabled'}>Re-run LLM judge</button><a class="btn btn-sm" href="/api/sessions/${sid}/export.json">Export</a><a class="btn btn-sm" href="/researcher#${sid}">Dashboard</a>`
+    : S.phase === 'review' ? `<button class="btn btn-primary btn-sm" id="finish" ${finishing || independentDone() && judgeBusy() ? 'disabled' : ''}>${independentDone() ? judgeBusy() ? 'Preparing suggested moments…' : 'Finish session' : 'Finish independent review'}</button>` : '';
   if ($('#finish')) $('#finish').onclick = finish;
   if ($('#run-judge')) $('#run-judge').onclick = async () => {
     if (!confirm('Send this session’s transcript and baseline to the LLM judge? Participant bookmarks and reviews are excluded.')) return;
@@ -113,6 +122,8 @@ async function addMoment(eid, candidate = null, answer = null) {
   } catch (error) { toast(error.message); }
 }
 async function finish() {
+  if (finishing) return;
+  finishing = true;
   $('#finish').disabled = true;
   try {
     if (!await outbox.flush() || !await flushReviewDrafts()) throw new Error('Resolve unsynced drafts or bookmarks before continuing.');
@@ -126,15 +137,33 @@ async function finish() {
       await api('POST', `/api/sessions/${sid}/advance`, { phase: 'review' }); await load(); forms.forEach(f => f.lock()); renderHeader(); renderSuggestions(); toast('Review complete — thank you');
     }
   } catch (error) { toast(error.message); }
-  finally { if ($('#finish')) $('#finish').disabled = false; }
+  finally { finishing = false; renderHeader(); }
 }
 function renderSuggestions() {
   const box = $('#suggestions');
   if (!researcher && (S.phase === 'done' || !cfg.studies.find(study => study.key === S.study)?.show_candidates_in_review)) { box.innerHTML = ''; return; }
-  if (!researcher && !independentDone()) { box.innerHTML = `<p class="small muted suggestion-lock">LLM suggestions stay hidden until your independent review is complete.</p>`; return; }
+  if (!researcher && !independentDone()) { box.innerHTML = `<p class="small muted suggestion-lock">${cfg.judge.automatic && S.runtime?.kind !== 'demo' ? 'Suggested moments are prepared automatically in the background. ' : ''}They stay hidden until your independent review is complete.</p>`; return; }
   const candidates = S.candidates.filter(c => c.source === 'judge' && !c.participant_response && (researcher ||
     ['expressed','possible'].includes(c.insight_evidence) && c.quotes_verified && c.start_event_id && c.end_event_id));
-  box.innerHTML = `<h2>${researcher ? 'LLM judge candidates' : 'Optional suggested moments'}</h2><p class="small muted">${S.judge?.status === 'running' ? 'The judge is running…' : S.judge?.status === 'error' ? 'Judge unavailable: ' + esc(S.judge.error) : candidates.length ? 'These are suggestions, not confirmed sparks. Keep your independent answers separate.' : 'No suggestions available. The researcher can run the LLM judge; an empty result is valid.'}</p>` + candidates.map(c => `<div class="cand-card" data-candidate="${c.id}"><p>${esc(c.trigger_quote || eventById(c.trigger_event_id)?.text || '')}</p>${c.uptake_quote ? `<p class="small">Then you: ${esc(c.uptake_quote)}</p>` : ''}${researcher ? `<p class="small muted">${esc(c.insight_evidence || c.mechanism)} · ${esc(c.type)} · ${esc(c.strength || 'uncalibrated')}</p><p>${esc(c.rationale)}</p>` : `<div class="row"><button class="btn btn-sm" data-answer="yes">I noticed this at the time</button><button class="btn btn-sm" data-answer="retrospective">Only now</button><button class="btn btn-sm" data-answer="unsure">Unsure</button><button class="btn btn-sm" data-answer="no">No</button></div>`}</div>`).join('');
+  const status = S.judge?.status || 'not_run';
+  const message = {
+    queued: 'Preparing suggested moments automatically — waiting for a judge slot…',
+    running: 'Preparing suggested moments automatically. You do not need to ask a researcher to start it.',
+    waiting_for_transcript: S.external ? 'Waiting for an agent transcript. Attach the log to generate suggested moments.' : 'No conversation messages were captured, so suggestions cannot be generated. Your bookmarks are still saved.',
+    disabled: 'Automatic judging is disabled for this session.',
+    unavailable: 'Suggestions could not be prepared: ' + (S.judge?.error || 'The judge is not configured.'),
+    error: 'Suggestion generation failed: ' + (S.judge?.error || 'Unknown error.'),
+    not_run: 'Suggested moments have not been generated yet.',
+    done: candidates.length ? 'These are suggestions, not confirmed sparks. Keep your independent answers separate.' :
+      S.judge?.n === 0 ? 'The judge completed and found no candidate episodes. This does not mean you had no sparks.' :
+      S.candidates.some(c => c.participant_response) ? 'No suggested moments left to review.' : 'The judge completed, but no suggestions meet the evidence requirements for participant review.'
+  }[status] || 'Suggestion status unavailable.';
+  box.innerHTML = `<h2>${researcher ? 'LLM judge candidates' : 'Optional suggested moments'}</h2><p class="small muted" data-judge-status="${status}">${esc(message)}</p>${!researcher && ['error','unavailable'].includes(status) ? '<button class="btn btn-sm" id="retry-judge">Retry generation</button>' : ''}` + candidates.map(c => `<div class="cand-card" data-candidate="${c.id}"><p>${esc(c.trigger_quote || eventById(c.trigger_event_id)?.text || '')}</p>${c.uptake_quote ? `<p class="small">Then you: ${esc(c.uptake_quote)}</p>` : ''}${researcher ? `<p class="small muted">${esc(c.insight_evidence || c.mechanism)} · ${esc(c.type)} · ${esc(c.strength || 'uncalibrated')}</p><p>${esc(c.rationale)}</p>` : `<div class="row"><button class="btn btn-sm" data-answer="yes">I noticed this at the time</button><button class="btn btn-sm" data-answer="retrospective">Only now</button><button class="btn btn-sm" data-answer="unsure">Unsure</button><button class="btn btn-sm" data-answer="no">No</button></div>`}</div>`).join('');
+  if ($('#retry-judge')) $('#retry-judge').onclick = async () => {
+    $('#retry-judge').disabled = true;
+    try { await api('POST', `/api/sessions/${sid}/judge`, {}); await load(); renderHeader(); renderSuggestions(); }
+    catch (error) { toast(error.message); $('#retry-judge')?.removeAttribute('disabled'); }
+  };
   $$('[data-candidate]').forEach(card => $$('[data-answer]', card).forEach(button => button.onclick = async () => {
     const candidate = candidates.find(c => c.id === card.dataset.candidate), answer = button.dataset.answer;
     if (['yes','retrospective'].includes(answer)) return addMoment(candidate.trigger_event_id, candidate, answer);
@@ -142,6 +171,7 @@ function renderSuggestions() {
   }));
 }
 cfg = await config(); await load(); outbox = new BookmarkOutbox(sid, () => {}); await outbox.flush(); await load();
+try { await prepareSuggestions(); } catch (error) { toast('Could not start suggestion generation: ' + error.message); }
 renderHeader(); renderPlayer(); renderTrack(); $('#show-tools').checked = true; renderTranscript(); renderMoments(); renderSuggestions();
 $('#show-tools').onchange = renderTranscript;
-setInterval(async () => { try { await load(); renderMoments(); renderSuggestions(); } catch {} }, 5000);
+setInterval(async () => { try { await load(); await prepareSuggestions(); renderHeader(); renderMoments(); renderSuggestions(); } catch {} }, 3000);

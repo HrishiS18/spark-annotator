@@ -83,6 +83,7 @@ const assert = require('node:assert/strict');
     await page.locator('#essay').fill('I have now inspected the task file and used the resulting artifact to explain my final approach.');
     await page.locator('#submit').click();
     await page.waitForURL(/\/review\?id=/);
+    await page.locator('[data-f=after]').first().waitFor();
     console.log('QA: review opened');
     assert(await page.locator('#player').isHidden());
     assert((await page.locator('#suggestions').textContent()).includes('hidden'));
@@ -134,17 +135,21 @@ const assert = require('node:assert/strict');
     await missed.locator('[data-decision=rejected]').click();
     await missed.locator('[data-save]').click();
     await page.waitForFunction(() => document.querySelectorAll('.review-card.saved').length === 2);
-    // Researcher inference can run first, but must remain hidden from the independent pass.
+    // No researcher action: completion already started judging automatically.
     const dashboard = await browser.newPage();
     dashboard.setDefaultTimeout(15000);
     dashboard.on('pageerror', err => errors.push(err.message));
     dashboard.on('dialog', dialog => dialog.accept());
     await dashboard.goto(base+'/researcher#'+sid);
-    await dashboard.locator('#run-judge').click();
     await dashboard.waitForFunction(() => document.querySelector('#main')?.textContent.includes('SYNTHETIC_TEST_SUMMARY'));
     await dashboard.screenshot({path:path.join(data,'researcher-console.png'),fullPage:true});
     const stillBlind = await (await fetch(`${base}/api/sessions/${sid}`)).json();
     assert.deepEqual(stillBlind.candidates,[]);
+    const auto = await (await fetch(`${base}/api/sessions/${sid}?view=researcher`)).json();
+    assert.equal(auto.judge.requested_by,'automatic');
+    assert.equal(auto.analysis_runs.length,1);
+    await page.reload();
+    assert.equal((await (await fetch(`${base}/api/sessions/${sid}?view=researcher`)).json()).analysis_runs.length,1);
     await page.screenshot({ path:path.join(data,'spark-review.png'),fullPage:true });
     await page.locator('#finish').click();
     console.log('QA: independent pass submitted');
@@ -165,9 +170,37 @@ const assert = require('node:assert/strict');
     assert.equal(final.marks[2].source,'candidate_confirm');
     assert.equal(final.candidates[0].participant_response.answer,'retrospective');
     assert(await suggested.locator('[data-f=after]').isDisabled());
+    // Distinguish missing transcript, completed empty result, and failed generation.
+    const request = async (url,body) => {
+      const result = await fetch(base+url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      assert(result.ok); return result.json();
+    };
+    async function stateSession(pid, withMessage) {
+      const s = await request('/api/sessions',{study:'dilemma',participant_id:pid,condition:withMessage?'human':'ai',room:pid});
+      await request('/api/sessions/'+s.id+'/advance',{phase:'pre',text:'Synthetic baseline'});
+      if (withMessage) await request('/api/sessions/'+s.id+'/message',{text:'Synthetic participant message'});
+      await request('/api/sessions/'+s.id+'/advance',{phase:'chat'});
+      await request('/api/sessions/'+s.id+'/advance',{phase:'post',text:'Synthetic final position'});
+      await request('/api/sessions/'+s.id+'/review/complete-independent',{});
+      const p = await context.newPage(); p.setDefaultTimeout(15000); p.on('pageerror',err=>errors.push(err.message));
+      await p.goto(base+'/review?id='+s.id);
+      return {p,s};
+    }
+    const missing = await stateSession('TEST-NO-TRANSCRIPT',false);
+    await missing.p.locator('[data-judge-status=waiting_for_transcript]').waitFor();
+    assert((await missing.p.locator('#suggestions').textContent()).includes('No conversation messages were captured'));
+    assert.equal((await (await fetch(base+'/api/sessions/'+missing.s.id+'?view=researcher')).json()).analysis_runs.length,0);
+    const empty = await stateSession('TEST-JUDGE-EMPTY',true);
+    await empty.p.locator('[data-judge-status=done]').waitFor();
+    assert((await empty.p.locator('#suggestions').textContent()).includes('completed and found no candidate'));
+    const failed = await stateSession('TEST-JUDGE-ERROR',true);
+    await failed.p.locator('[data-judge-status=error]').waitFor();
+    await failed.p.locator('#retry-judge').click();
+    await failed.p.locator('[data-judge-status=done]').waitFor();
+    assert.equal((await (await fetch(base+'/api/sessions/'+failed.s.id+'?view=researcher')).json()).analysis_runs.length,2);
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ passed: true, tests: ['create','stream','approval','tools','upload','artifact','offline bookmark recovery','exposure snapshot','lost save ACK','multi-tab conflict','draft autosave recovery','multi-event passage','missed moment','independent blinding','researcher judge','retrospective suggestion','final locking','export'],
-      screenshot: path.join(data, 'spark-review.png') }));
+    console.log(JSON.stringify({ passed: true, tests: ['create','stream','approval','tools','upload','artifact','offline bookmark recovery','exposure snapshot','lost save ACK','multi-tab conflict','draft autosave recovery','multi-event passage','missed moment','automatic judging','no duplicate calls on refresh','independent blinding','retrospective suggestion','final locking','export'],
+      status_tests:['missing transcript','completed empty result','failed result and user retry'],screenshot: path.join(data, 'spark-review.png') }));
   } finally {
     if (browser) await browser.close();
     processHandle.kill('SIGINT');

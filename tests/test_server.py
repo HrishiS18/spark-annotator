@@ -25,7 +25,9 @@ class ServerTests(unittest.TestCase):
         self.runtime = RuntimeManager(self.store, root, rpc_factory=FakeRpc, command=["test"])
         self.patches = [patch.object(server, "_STORE", self.store), patch.object(server, "_RUNTIME", self.runtime),
                         patch.object(server, "UPLOADS", str(root / "uploads")),
-                        patch.object(server, "RECORDINGS", str(root / "recordings"))]
+                        patch.object(server, "RECORDINGS", str(root / "recordings")),
+                        patch.object(server.judge, "status", return_value={"live":True,"provider":"test","model":"test","version":"test"}),
+                        patch.object(server.judge, "run", return_value=([],{"summary":"Synthetic no candidates","model":"test"}))]
         for p in self.patches:
             p.start()
         self.httpd = server.StudyHTTPServer(("127.0.0.1", 0), server.Handler)
@@ -39,6 +41,8 @@ class ServerTests(unittest.TestCase):
         self.httpd.shutdown()
         self.httpd.server_close()
         self.thread.join(timeout=3)
+        for worker in list(server._JUDGE_JOBS.values()):
+            worker.join(timeout=5)
         for p in reversed(self.patches):
             p.stop()
         self.tmp.cleanup()
@@ -61,6 +65,14 @@ class ServerTests(unittest.TestCase):
         self.prefix = f"/api/sessions/{self.sid}"
         self.request(self.prefix + "/advance", {"phase": "pre", "text": "Private baseline"}, "POST")
         return s
+
+    def wait_judge(self):
+        for _ in range(150):
+            s = self.store.load(self.sid)
+            if (s.get("judge") or {}).get("status") not in ("queued","running") and self.sid not in server._JUDGE_JOBS:
+                return s
+            time.sleep(.02)
+        self.fail("Judge job did not finish")
 
     def test_codex_session_message_stream_review_and_export(self):
         s = self.create()
@@ -181,7 +193,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request(self.prefix+"/advance",{"phase":"review"},"POST")[0],200)
         self.assertEqual(self.request(self.prefix+"/candidates/c_test",{"participant_response":{"answer":"yes"}},"PATCH")[0],400)
 
-    def test_judge_explicit_run_only_and_no_regex_endpoints(self):
+    def test_manual_judge_override_for_demo_and_no_regex_endpoints(self):
         self.create(runtime="demo")
         with patch.object(server.judge,"status",return_value={"live":True,"model":"test","provider":"codex"}):
             self.assertEqual(self.request(self.prefix+"/judge",{},"POST")[0],400)
@@ -190,7 +202,7 @@ class ServerTests(unittest.TestCase):
         with server.LOCK:
             s = self.store.load(self.sid); server.add_event(s,"assistant","Synthetic."); self.store.save(s)
         self.request(self.prefix+"/advance",{"phase":"chat"},"POST")
-        self.assertIsNone(self.store.load(self.sid).get("judge"))
+        self.assertEqual(self.store.load(self.sid)["judge"]["status"],"disabled")
         started, release = threading.Event(), threading.Event()
         def infer(s):
             started.set(); release.wait(3); return [], {"summary":"No candidates","version":"test"}
@@ -231,6 +243,82 @@ class ServerTests(unittest.TestCase):
             server.recover_judges()
         inference.assert_not_called()
         self.assertEqual(self.store.load(self.sid)["judge"]["status"],"error")
+
+    def test_automatic_judge_after_conversation_deduplicates_refresh_and_waits_before_finish(self):
+        self.create()
+        with server.LOCK:
+            s = self.store.load(self.sid); server.add_event(s,"assistant","Synthetic suggestion."); self.store.save(s)
+        started, release = threading.Event(), threading.Event()
+        def infer(s):
+            started.set(); release.wait(3); return [], {"summary":"Empty is a valid result","version":"test"}
+        with patch.object(server.judge,"run",side_effect=infer) as model:
+            try:
+                self.assertEqual(self.request(self.prefix+"/advance",{"phase":"chat"},"POST")[0],200)
+                self.assertTrue(started.wait(1))
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    replies = list(pool.map(lambda _: self.request(self.prefix+"/judge/ensure",{},"POST"),range(12)))
+                self.assertTrue(all(code == 202 for code,_ in replies))
+                self.request(self.prefix+"/advance",{"phase":"post","text":"Final position"},"POST")
+                self.assertEqual(self.request(self.prefix)[1]["candidates"],[])
+                self.request(self.prefix+"/review/complete-independent",{},"POST")
+                self.assertEqual(self.request(self.prefix+"/advance",{"phase":"review"},"POST")[0],400)
+            finally:
+                release.set()
+            saved = self.wait_judge()
+            for _ in range(3):
+                self.assertEqual(self.request(self.prefix+"/judge/ensure",{},"POST")[0],200)
+            self.assertEqual(model.call_count,1)
+        self.assertEqual(saved["judge"]["status"],"done")
+        self.assertEqual(saved["judge"]["n"],0)
+        self.assertEqual(saved["judge"]["requested_by"],"automatic")
+        self.assertEqual(saved["analysis_runs"][0]["metadata"]["requested_by"],"automatic")
+
+    def test_automatic_judge_waits_for_external_transcript_then_starts_on_import(self):
+        self.create(study="agentic")
+        with patch.object(server.judge,"run",return_value=([],{"summary":"Synthetic"})) as model:
+            self.request(self.prefix+"/advance",{"phase":"chat"},"POST")
+            self.assertEqual(self.store.load(self.sid)["judge"]["status"],"waiting_for_transcript")
+            self.request(self.prefix+"/judge/ensure",{},"POST")
+            model.assert_not_called()
+            raw = json.dumps({"messages":[{"role":"assistant","content":"Synthetic imported message.","timestamp":"2026-10-13T00:00:01Z"}]}).encode()
+            _, upload = self.request("/api/upload",raw,"POST",{"X-Filename":"fixture.json"},raw=True)
+            self.assertEqual(self.request(self.prefix+"/import",{"upload_id":upload["upload_id"]},"POST")[0],200)
+            self.assertEqual(self.wait_judge()["judge"]["status"],"done")
+            self.request(self.prefix+"/import",{"upload_id":upload["upload_id"]},"POST")
+            self.assertEqual(model.call_count,1)
+
+    def test_automatic_failure_is_distinct_and_retry_is_explicit(self):
+        self.create()
+        with server.LOCK:
+            s = self.store.load(self.sid); server.add_event(s,"user","Synthetic question."); self.store.save(s)
+        with patch.object(server.judge,"run",side_effect=server.llm.LLMError("Synthetic failure")) as model:
+            self.request(self.prefix+"/advance",{"phase":"chat"},"POST")
+            self.assertEqual(self.wait_judge()["judge"]["status"],"error")
+            self.request(self.prefix+"/judge/ensure",{},"POST")
+            self.assertEqual(model.call_count,1)
+        self.assertEqual(self.request(self.prefix+"/judge",{},"POST")[0],202)
+        self.assertEqual(self.wait_judge()["judge"]["status"],"done")
+        self.assertEqual(len(self.store.load(self.sid)["analysis_runs"]),2)
+
+    def test_no_live_calls_for_demo_disabled_or_unavailable_judges(self):
+        self.create(runtime="demo")
+        with server.LOCK:
+            s = self.store.load(self.sid); server.add_event(s,"assistant","Synthetic demo."); self.store.save(s)
+        with patch.object(server.judge,"run") as model:
+            self.request(self.prefix+"/advance",{"phase":"chat"},"POST")
+            self.assertEqual(self.store.load(self.sid)["judge"]["status"],"disabled")
+            model.assert_not_called()
+        self.create()
+        with server.LOCK:
+            s = self.store.load(self.sid); server.add_event(s,"assistant","Synthetic live."); self.store.save(s)
+        with patch.object(server.judge,"status",return_value={"live":False,"reason":"Missing setup","provider":"test","model":"test"}), patch.object(server.judge,"run") as model:
+            self.request(self.prefix+"/advance",{"phase":"chat"},"POST")
+            self.assertEqual(self.store.load(self.sid)["judge"]["status"],"unavailable")
+            model.assert_not_called()
+        with patch.dict("os.environ",{"SPARK_AUTO_JUDGE":"0"}), patch.object(server.judge,"run") as model:
+            self.request(self.prefix+"/judge/ensure",{},"POST")
+            self.assertEqual(self.store.load(self.sid)["judge"]["status"],"disabled")
+            model.assert_not_called()
 
 
 if __name__ == "__main__":

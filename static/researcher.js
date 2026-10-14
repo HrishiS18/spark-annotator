@@ -42,7 +42,7 @@ function render() {
     <h1>${esc(S.participant_id)} · ${esc(S.prompt.title)}</h1>
     <p class="small muted">${esc(S.study)} · ${esc(S.runtime?.kind || S.condition)} · ${esc(S.phase)} · ${S.events.length} events</p>
     <div class="row">
-      <button class="btn btn-sm" id="run-judge" ${!cfg.judge.live || ['pre','chat'].includes(S.phase) || !S.events.length || jd.status === 'running' ? 'disabled' : ''}>${jd.status === 'running' ? 'Judge running…' : 'Run LLM judge'}</button>
+      <button class="btn btn-sm" id="run-judge" ${!cfg.judge.live || ['pre','chat'].includes(S.phase) || !S.events.length || ['queued','running'].includes(jd.status) ? 'disabled' : ''}>${['queued','running'].includes(jd.status) ? 'Judge preparing…' : 'Re-run LLM judge'}</button>
       <a class="btn btn-sm" href="/review?id=${S.id}&mode=researcher">Transcript / recording review</a>
       <a class="btn btn-sm" href="/api/sessions/${S.id}/transcript.md">Readable transcript</a>
       <a class="btn btn-sm" href="/api/sessions/${S.id}/export.json">Full JSON + history</a>
@@ -105,8 +105,8 @@ function render() {
     try { await api('POST',`/api/sessions/${S.id}/code`,{...Object.fromEntries(new FormData(f)),kind:f.dataset.kind,target:f.dataset.target}); toast('Researcher code saved'); }
     catch (error) { toast(error.message); }
   });
-  if (jd.status === 'running') judgePoll = setInterval(async () => {
-    try { const fresh = await api('GET',`/api/sessions/${S.id}/poll?after=${S.events.length}`); if (fresh.judge?.status !== 'running') await openSession(S.id); } catch {}
+  if (['queued','running'].includes(jd.status)) judgePoll = setInterval(async () => {
+    try { const fresh = await api('GET',`/api/sessions/${S.id}/poll?after=${S.events.length}`); if (!['queued','running'].includes(fresh.judge?.status)) await openSession(S.id); } catch {}
   },3000);
 }
 await refreshList();

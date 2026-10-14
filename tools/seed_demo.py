@@ -93,4 +93,4 @@ if __name__ == "__main__":
     a = seed_dilemma()
     b = seed_agentic()
     print("Seeded:", a["id"], "(dilemma)", b["id"], "(external agent)")
-    print("No automatic predictions seeded; the LLM judge is researcher-triggered.")
+    print("No model calls during seeding. Open an external review to generate suggestions, or judge the scripted demo manually.")

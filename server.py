@@ -10,6 +10,7 @@ as read-only migration backups. Codex execution is a localhost-only prototype.
 import argparse
 import copy
 import csv
+import hashlib
 import io
 import json
 import mimetypes
@@ -52,6 +53,8 @@ STUDIES = {s["key"]: s for s in _load_config("studies.json")["studies"]}
 LOCK = threading.RLock()
 _STORE = None
 _RUNTIME = None
+_JUDGE_JOBS = {}
+_JUDGE_SLOTS = threading.BoundedSemaphore(2)
 
 
 def get_store():
@@ -162,6 +165,8 @@ def advance(s, phase, text=None):
     if phase == "review":
         if not s.get("independent_review"):
             raise ValueError("Complete independent review first")
+        if (s.get("judge") or {}).get("status") in ("queued", "running"):
+            raise ValueError("Suggested moments are still being prepared. Wait before finishing.")
         if any(m.get("source") == "candidate_confirm" and not m.get("deleted") and
                (m.get("review_dirty") or (m.get("review") or {}).get("status") != "submitted") for m in s["marks"]):
             raise ValueError("Confirm the suggested moments you added before finishing")
@@ -242,14 +247,81 @@ def _merge_candidates(s, cands, source, metadata=None):
     return storage.record_analysis_run(s, source, cands, metadata or {}, configuration)
 
 
+def auto_judge_enabled():
+    return os.environ.get("SPARK_AUTO_JUDGE", "1") != "0"
+
+
+def judge_fingerprint(s):
+    events = [e for e in s["events"] if e["role"] != "thinking" and not e.get("meta", {}).get("superseded")]
+    settings = judge.status()
+    value = {"context": judge._context(s), "transcript": transcript.render_for_judge(s, events),
+             "version": judge.VERSION, "provider": settings.get("provider"),
+             "model": settings.get("model"), "effort": settings.get("effort")}
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def ensure_judge(sid, manual=False):
+    """Idempotently prepare suggestions, never infer on GET or bulk startup."""
+    with LOCK:
+        s = load(sid)
+        if s["phase"] in ("pre", "chat") or not manual and s["phase"] == "done":
+            if manual:
+                raise ValueError("Finish the conversation before running the judge")
+            return {"status": "not_run"}
+        previous = s.get("judge") or {}
+        if previous.get("status") in ("queued", "running") or sid in _JUDGE_JOBS:
+            if manual:
+                raise ValueError("The judge is already running for this session")
+            return previous
+        fingerprint = judge_fingerprint(s)
+        if not manual and previous.get("status") in ("done", "error") and previous.get("input_fingerprint", fingerprint) == fingerprint:
+            return previous  # No repeated calls after refresh or a failed run.
+        visible = [e for e in s["events"] if e["role"] != "thinking" and not e.get("meta", {}).get("superseded")]
+        settings = judge.status()
+        if not visible:
+            if manual:
+                raise ValueError("No transcript to judge yet")
+            state = {"status": "waiting_for_transcript", "error": None}
+        elif not manual and (not auto_judge_enabled() or s.get("runtime", {}).get("kind") == "demo"):
+            state = {"status": "disabled", "error": None}
+        elif not settings["live"]:
+            if manual:
+                raise ValueError(f"LLM judge unavailable: {settings.get('reason')}")
+            state = {"status": "unavailable", "error": settings.get("reason")}
+        else:
+            state = {"status": "queued", "requested_at": now()[0], "input_fingerprint": fingerprint,
+                     "requested_by": "manual" if manual else "automatic", **judge.estimate(s)}
+        if state != previous:
+            s["judge"] = state
+            save(s)
+        if state["status"] != "queued":
+            return state
+        def work():
+            try:
+                with _JUDGE_SLOTS:
+                    run_judge(sid, reserved=True)
+            finally:
+                with LOCK:
+                    _JUDGE_JOBS.pop(sid, None)
+        worker = threading.Thread(target=work, name="spark-judge-" + sid, daemon=True)
+        _JUDGE_JOBS[sid] = worker
+        worker.start()
+        return state
+
+
 def run_judge(sid, reserved=False):
     with LOCK:
         s = load(sid)
         if s["phase"] in ("pre", "chat"):
             raise ValueError("Finish the conversation before running the judge")
-        if not reserved and (s.get("judge") or {}).get("status") == "running":
+        if not reserved and (s.get("judge") or {}).get("status") in ("queued", "running"):
             raise ValueError("The judge is already running")
-        s["judge"] = {"status": "running", "started_at": now()[0], **judge.estimate(s)}
+        tracking = {k: v for k, v in (s.get("judge") or {}).items()
+                    if reserved and k in ("requested_at", "input_fingerprint", "requested_by")}
+        s["judge"] = {**tracking, "status": "running", "started_at": now()[0], **judge.estimate(s)}
+        s["judge"].setdefault("input_fingerprint", judge_fingerprint(s))
+        s["judge"].setdefault("requested_by", "manual")
+        tracking = dict(s["judge"])
         save(s)
     try:
         cands, meta = judge.run(s)
@@ -260,7 +332,7 @@ def run_judge(sid, reserved=False):
         cands, meta, status, err = None, {}, "error", repr(exc)
     with LOCK:
         s = load(sid)
-        run_metadata = {**meta, "status": status, "error": err, "finished_at": now()[0]}
+        run_metadata = {**tracking, **meta, "status": status, "error": err, "finished_at": now()[0]}
         # Failed attempts are runs too. Do not present older predictions as if
         # they came from the failed run; previous responses remain archived.
         _merge_candidates(s, cands or [], "judge", run_metadata)
@@ -277,7 +349,7 @@ def recover_judges():
     """Single-server startup recovery; never restart inference automatically."""
     with LOCK:
         for s in all_sessions():
-            if (s.get("judge") or {}).get("status") != "running":
+            if (s.get("judge") or {}).get("status") not in ("queued", "running"):
                 continue
             error = "Server restarted during judging. Run again explicitly."
             meta = {**s["judge"], "status": "error", "error": error, "finished_at": now()[0]}
@@ -631,7 +703,7 @@ class Handler(BaseHTTPRequestHandler):
                 "personas": [{"key": p["key"], "label": p["label"]} for p in PERSONAS.values()],
                 "llm": llm.status(),
                 "runtime": get_runtime().status(),
-                "judge": judge.status(),
+                "judge": {**judge.status(), "automatic": auto_judge_enabled()},
             })
         if api == ["sessions"]:
             if method == "GET":
@@ -771,6 +843,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Stop the agent or wait for it to finish before leaving the conversation")
                 nxt = advance(s, body.get("phase"), body.get("text"))
                 save(s)
+            if body.get("phase") in ("chat", "post"):
+                ensure_judge(sid)
             return self._send(200, {"phase": nxt})
 
         if method == "POST" and rest == ["message"]:
@@ -870,23 +944,11 @@ class Handler(BaseHTTPRequestHandler):
                 save(s)
             return self._send(200, c)
 
-        if method == "POST" and rest == ["judge"]:
+        if method == "POST" and rest in (["judge"], ["judge", "ensure"]):
             if body:
                 raise ValueError("Judge takes no participant hints or supplied predictions")
-            if not judge.status()["live"]:
-                raise ValueError(f"LLM judge unavailable: {judge.status()['reason']}")
-            with LOCK:
-                s = load(sid)
-                if s["phase"] in ("pre", "chat"):
-                    raise ValueError("Finish the conversation before running the judge")
-                if not s["events"]:
-                    raise ValueError("No transcript to judge yet")
-                if (s.get("judge") or {}).get("status") == "running":
-                    raise ValueError("The judge is already running for this session")
-                s["judge"] = {"status": "running", "started_at": now()[0], **judge.estimate(s)}
-                save(s)
-            threading.Thread(target=run_judge, args=(sid, True), daemon=True).start()
-            return self._send(202, {"status": "running", **judge.estimate(s)})
+            state = ensure_judge(sid, manual=rest == ["judge"])
+            return self._send(202 if state["status"] in ("queued", "running") else 200, state)
 
         if method == "POST" and rest == ["code"]:
             key = f"{body['kind']}:{body['target']}"
@@ -921,6 +983,7 @@ class Handler(BaseHTTPRequestHandler):
                 s["imports"].append({"at": now()[0], "file": name, "members": members, "meta": meta,
                                      "events": len(imported)})
                 save(s)
+            ensure_judge(sid)
             return self._send(200, {"events": len(events), "meta": meta,
                                     "aligned": sum(1 for m in s["marks"] if m.get("event_id"))})
 
