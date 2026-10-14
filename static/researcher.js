@@ -20,6 +20,7 @@ function renderList() {
 $('#filter').oninput = renderList;
 async function openSession(id) {
   S = await api('GET', `/api/sessions/${id}?view=researcher`);
+  sessions = sessions.map(s => s.id === id ? {...s,marks:marks().length,candidates:candidates().length,phase:S.phase} : s);
   history.replaceState(null, '', '#' + id); renderList(); render();
 }
 function codeForm(kind, id) {

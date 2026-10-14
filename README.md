@@ -39,7 +39,7 @@ Review is the same transcript-first interface for integrated and external sessio
 - Finish the independent pass to lock its answers **before** seeing LLM suggestions.
 - Suggested moments are recorded separately, distinguishing noticed-at-the-time from only-now recognition. Suggestions never overwrite the independent pass.
 
-Existing legacy annotations remain preserved; they are not automatically converted into confirmed insights.
+Existing legacy annotations remain preserved; they are not automatically converted into confirmed insights. Legacy model outputs remain researcher-visible but are not offered as participant suggestions; rerun the current judge for validated suggestions.
 
 ## LLM judge (no regex spark detector)
 
