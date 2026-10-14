@@ -13,7 +13,8 @@ let connecting = false;
 let pendingMessage = null;
 let workspaceRefresh = null;
 let bookmarkOutbox = null;
-const isCodex = () => S.runtime?.kind === "codex";
+const isAgentRuntime = () => ["codex","claude"].includes(S.runtime?.kind);
+const agentName = () => S.runtime?.kind === "claude" ? "Claude agent" : "Codex";
 const PHASE_LABEL = { pre: "Before", chat: "Conversation", post: "After", review: "Review", done: "Done" };
 const CHAT_ROLES = ["user", "assistant", "partner"];
 
@@ -122,7 +123,7 @@ function writingView() {
 
 // ------------------------------------------------------------------ chat
 
-function partnerName() { return S.condition === "human" ? "Partner" : isCodex() ? "Codex" : S.runtime?.kind === "demo" ? "Scripted demo" : "AI"; }
+function partnerName() { return S.condition === "human" ? "Partner" : isAgentRuntime() ? agentName() : S.runtime?.kind === "demo" ? "Scripted demo" : "AI"; }
 
 function msgHTML(e) {
   const marks = S.marks.filter((m) => m.event_id === e.id && !m.deleted);
@@ -149,7 +150,7 @@ function msgHTML(e) {
 
 function renderThread() {
   const opened = new Set($$("details[open][data-tool]").map((el) => el.dataset.tool));
-  const evs = S.events.filter((e) => !e.meta?.superseded && (CHAT_ROLES.includes(e.role) || isCodex() && ["tool_call", "tool_result"].includes(e.role)));
+  const evs = S.events.filter((e) => !e.meta?.superseded && (CHAT_ROLES.includes(e.role) || isAgentRuntime() && ["tool_call", "tool_result"].includes(e.role)));
   const intro = S.condition === "human"
     ? "You're paired with another participant. Say hello and start discussing the question."
     : "Start by telling your partner what you think about the question, or ask it anything.";
@@ -164,7 +165,7 @@ function scrollBottom() { const c = $("#content"); c.scrollTop = c.scrollHeight;
 function chatView() {
   $("#content").innerHTML = `<div class="narrow"><p class="instructions small">${esc(study.chat_instructions)}</p>
     <div class="runtime-panel" id="runtime-panel"></div><div id="approvals"></div>
-    ${isCodex() ? `<details class="workspace-panel"><summary>Task workspace <span class="small muted">files live on the execution host</span></summary>
+    ${isAgentRuntime() ? `<details class="workspace-panel"><summary>Task workspace <span class="small muted">files live on the execution host</span></summary>
       <p class="small muted">Only upload files you intend to share with the agent. Existing files are never overwritten.</p>
       <label class="btn btn-sm">${icon("upload")} Add task file<input id="workspace-upload" type="file" hidden></label>
       <button class="btn btn-sm btn-ghost" id="refresh-files">Refresh files</button><div id="workspace-files"></div><pre id="file-preview" class="hidden"></pre></details>` : ""}
@@ -183,7 +184,7 @@ function chatView() {
     }
     if (S.phase === "chat" && $("#thread")) renderThread();
   });
-  $("#top-actions").innerHTML = `${isCodex() ? `<button class="btn btn-sm" id="connect-agent">Reconnect</button><button class="btn btn-sm hidden" id="stop-agent">${icon("stop")} Stop agent</button>` : ""}<button class="btn btn-sm" id="finish">Finish conversation</button>`;
+  $("#top-actions").innerHTML = `${isAgentRuntime() ? `<button class="btn btn-sm" id="connect-agent">Reconnect</button><button class="btn btn-sm hidden" id="stop-agent">${icon("stop")} Stop agent</button>` : ""}<button class="btn btn-sm" id="finish">Finish conversation</button>`;
   $("#finish").onclick = async () => {
     if (!confirm("Finish the conversation and move on? You won't be able to send more messages.")) return;
     await advance();
@@ -192,7 +193,7 @@ function chatView() {
   scrollBottom();
   $("#input").focus();
   if (S.condition === "human") pollTimer = setInterval(pollPartner, 1500);
-  if (isCodex()) {
+  if (isAgentRuntime()) {
     $("#connect-agent").onclick = connectAgent;
     $("#stop-agent").onclick = async () => {
       try { await api("POST", `/api/sessions/${sid}/runtime/interrupt`, {}); }
@@ -219,7 +220,7 @@ function chatView() {
 function renderRuntime() {
   const panel = $("#runtime-panel");
   if (!panel) return;
-  if (!isCodex()) {
+  if (!isAgentRuntime()) {
     const mode = S.condition === "human" ? "Human partner" : S.runtime?.kind === "demo" ? "SCRIPTED DEMO — not a live model" : S.runtime?.kind === "legacy" ? "Legacy saved conversation — runtime configuration was not recorded" : "Plain LLM chat — no agent tools";
     panel.innerHTML = `<span class="status-pill">${esc(mode)}</span>`;
     $("#send").disabled = busy;
@@ -228,8 +229,8 @@ function renderRuntime() {
   const runtime = S.runtime;
   const active = ["starting", "running", "awaiting_approval"].includes(runtime.status);
   const status = connecting ? "connecting" : runtime.status || "disconnected";
-  panel.innerHTML = `<div class="row"><span class="status-pill">Codex agent · ${esc(status.replaceAll("_", " "))}</span>
-      <span class="small muted">${esc(runtime.model || "Configured model")} · ${esc(runtime.version || cfg.runtime.version || "")}</span></div>
+  panel.innerHTML = `<div class="row"><span class="status-pill">${agentName()} · ${esc(status.replaceAll("_", " "))}</span>
+      <span class="small muted">${esc(runtime.model || "Configured model")} · ${esc(runtime.version || cfg.runtimes?.[runtime.kind]?.version || cfg.runtime.version || "")}</span></div>
       <p class="small muted">Local development runtime. Commands operate on its task workspace, not automatically on your personal files.</p>
       ${runtime.error ? `<div class="runtime-error" role="alert">${esc(runtime.error)}</div>` : ""}`;
   $("#send").disabled = busy || active || connecting || !["ready", "interrupted", "failed"].includes(runtime.status);
@@ -240,7 +241,14 @@ function renderRuntime() {
   $("#connect-agent").classList.toggle("hidden", runtime.status === "ready" && !runtime.error);
   $("#workspace-upload").disabled = active || connecting;
   const approvals = runtime.approvals || [];
+  const questionDrafts = new Map($$('[data-approval]').map(card=>[card.dataset.approval,
+    Object.fromEntries($$('[data-answer]',card).map(input=>[input.dataset.answer,input.value]))]));
   $("#approvals").innerHTML = approvals.map((a) => {
+    if (a.method === "claude/question") return `<div class="approval-card" data-approval="${a.id}"><h3>Claude has a question</h3>
+      ${a.params.questions.map((q,i) => `<label class="field"><span>${esc(q.question)}</span>
+        ${q.options?.length ? `<span class="small muted">${q.options.map(o=>esc(o.label)+': '+esc(o.description || '')).join(' · ')}</span>` : ''}
+        <input type="text" data-answer="${i}" placeholder="Your answer (an option or your own words)"></label>`).join('')}
+      <button class="btn btn-primary btn-sm" data-decision="accept">Send answers</button><button class="btn btn-sm" data-decision="decline">Decline</button></div>`;
     const item = S.events.find((e) => e.meta?.runtime_item_id === a.params.itemId);
     const description = a.params.command || item?.text || a.params.reason || "The agent requested permission.";
     return `<div class="approval-card" data-approval="${a.id}"><h3>Agent approval required</h3>
@@ -249,10 +257,16 @@ function renderRuntime() {
       <button class="btn btn-primary btn-sm" data-decision="accept">Allow once</button>
       <button class="btn btn-sm" data-decision="decline">Decline</button></div>`;
   }).join("");
+  $$('[data-approval]').forEach(card=>$$('[data-answer]',card).forEach(input=>{
+    input.value=questionDrafts.get(card.dataset.approval)?.[input.dataset.answer] || '';
+  }));
   $$("[data-approval]").forEach((card) => $$('[data-decision]', card).forEach((button) => {
     button.onclick = async () => {
       button.disabled = true;
-      try { await api("POST", `/api/sessions/${sid}/runtime/approval`, { id: card.dataset.approval, decision: button.dataset.decision }); }
+      const approval = approvals.find(a=>a.id === card.dataset.approval);
+      const answers = approval.method === "claude/question" ? Object.fromEntries(approval.params.questions.map((q,i) =>
+        [q.question, $(`[data-answer="${i}"]`,card).value])) : undefined;
+      try { await api("POST", `/api/sessions/${sid}/runtime/approval`, { id: card.dataset.approval, decision: button.dataset.decision, answers }); }
       catch (err) { toast(err.message); button.disabled = false; }
     };
   }));
@@ -294,7 +308,7 @@ function panelNotice(text) {
 }
 
 async function refreshFiles() {
-  if (!$("#workspace-files") || !isCodex()) return;
+  if (!$("#workspace-files") || !isAgentRuntime()) return;
   try {
     const files = await api("GET", `/api/sessions/${sid}/workspace/files`);
     $("#workspace-files").innerHTML = files.length ? files.map((file) => `<div class="workspace-file row">
@@ -336,7 +350,7 @@ $("#composer").addEventListener("submit", async (e) => {
   // optimistic render
   S.events.push({ id: "pending", role: "user", text });
   renderThread();
-  if (S.condition !== "human" && !isCodex()) $("#typing").innerHTML = `<div class="msg msg-ai"><div class="who">${partnerName()}</div><span class="typing"><i></i><i></i><i></i></span></div>`;
+  if (S.condition !== "human" && !isAgentRuntime()) $("#typing").innerHTML = `<div class="msg msg-ai"><div class="who">${partnerName()}</div><span class="typing"><i></i><i></i><i></i></span></div>`;
   scrollBottom();
   try {
     const res = await api("POST", `/api/sessions/${sid}/message`, { text, compose_ms, client_message_id: messageId });

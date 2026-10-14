@@ -13,7 +13,7 @@ const offset = t => t == null ? 0 : t - t0;
 const independentDone = () => !!S.independent_review;
 const judgeBusy = () => ['queued','running'].includes(S.judge?.status);
 const liveMarks = () => S.marks.filter(m => !m.deleted);
-const label = e => ({ user: 'You', assistant: S.runtime?.kind === 'codex' ? 'Codex' : 'Agent', partner: 'Partner', tool_call: 'Tool call', tool_result: 'Tool output' }[e.role] || e.role);
+const label = e => ({ user: 'You', assistant: S.runtime?.kind === 'codex' ? 'Codex' : S.runtime?.kind === 'claude' ? 'Claude agent' : 'Agent', partner: 'Partner', tool_call: 'Tool call', tool_result: 'Tool output' }[e.role] || e.role);
 
 async function load() {
   S = await api('GET', `/api/sessions/${sid}${researcher ? '?view=researcher' : ''}`);

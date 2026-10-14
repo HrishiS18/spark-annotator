@@ -4,7 +4,7 @@
     python3 server.py --host 0.0.0.0   # let lab machines on the LAN connect
 
 Storage is transactional SQLite. Original data/sessions/*.json files are retained
-as read-only migration backups. Codex execution is a localhost-only prototype.
+as read-only migration backups. Integrated agent execution is localhost-only.
 """
 
 import argparse
@@ -30,7 +30,8 @@ import parsers
 import transcript
 import storage
 import annotations
-from codex_runtime import RuntimeManager, RuntimeUnavailable
+from codex_runtime import RuntimeUnavailable
+from agent_runtime import RuntimeManager, AGENT_KINDS
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.abspath(os.environ.get("SPARK_DATA_DIR", os.path.join(ROOT, "data")))
@@ -115,7 +116,7 @@ def phases_for(study):
     return order + ["review", "done"]
 
 
-def create_session(body):
+def create_session(body, allow_legacy=False):
     study = STUDIES.get(body.get("study"))
     if not study:
         raise ValueError("unknown study")
@@ -127,8 +128,8 @@ def create_session(body):
     if condition not in ("ai", "human"):
         raise ValueError("unknown partner condition")
     runtime_kind = "external" if study.get("external") else "human" if condition == "human" else body.get("runtime", "codex")
-    if runtime_kind not in ("codex", "human", "external", "plain", "demo"):
-        raise ValueError("unknown runtime")
+    if runtime_kind not in AGENT_KINDS | {"human","external"} and not (allow_legacy and runtime_kind in ("plain","demo")):
+        raise ValueError("Choose Codex or Claude agent. Plain chat and scripted demo are not new participant runtimes.")
     iso, _ = now()
     order = phases_for(study)
     s = {
@@ -144,8 +145,9 @@ def create_session(body):
         "recording": None, "parse_turns": [],
         "schema_version": 2, "analysis_runs": [],
         "runtime": {"kind": runtime_kind, "status": "disconnected", "active_turn": None, "approvals": [],
-                    "model": os.environ.get("SPARK_CODEX_MODEL") or None,
-                    "effort": os.environ.get("SPARK_CODEX_EFFORT", "medium")},
+                    "model": os.environ.get("SPARK_CLAUDE_MODEL","sonnet") if runtime_kind == "claude" else os.environ.get("SPARK_CODEX_MODEL") or None,
+                    "requested_model": os.environ.get("SPARK_CLAUDE_MODEL","sonnet") if runtime_kind == "claude" else os.environ.get("SPARK_CODEX_MODEL") or None,
+                    "effort": os.environ.get("SPARK_CLAUDE_EFFORT" if runtime_kind == "claude" else "SPARK_CODEX_EFFORT", "medium")},
     }
     if body.get("task"):
         s["prompt"] = dict(prompt, text=body["task"].strip()[:2000])
@@ -703,6 +705,7 @@ class Handler(BaseHTTPRequestHandler):
                 "personas": [{"key": p["key"], "label": p["label"]} for p in PERSONAS.values()],
                 "llm": llm.status(),
                 "runtime": get_runtime().status(),
+                "runtimes": get_runtime().statuses() if hasattr(get_runtime(),"statuses") else {"codex":get_runtime().status()},
                 "judge": {**judge.status(), "automatic": auto_judge_enabled()},
             })
         if api == ["sessions"]:
@@ -711,8 +714,8 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST":
                 body = self._json()
                 if (not STUDIES.get(body.get("study"), {}).get("external") and body.get("condition", "ai") == "ai"
-                        and body.get("runtime", "codex") == "codex" and self.server.server_address[0] not in ("127.0.0.1", "::1")):
-                    raise RuntimeUnavailable("Codex execution is localhost-only until deployment isolation and authentication are implemented.")
+                        and body.get("runtime", "codex") in AGENT_KINDS and self.server.server_address[0] not in ("127.0.0.1", "::1")):
+                    raise RuntimeUnavailable("Agent execution is localhost-only until deployment isolation and authentication are implemented.")
                 return self._send(201, create_session(body))
         if api == ["upload"] and method == "POST":
             name = os.path.basename(self.headers.get("X-Filename") or "upload.jsonl")
@@ -740,7 +743,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _session_route(self, method, sid, rest, query):
         if rest[:1] == ["runtime"] and self.server.server_address[0] not in ("127.0.0.1", "::1"):
-            raise RuntimeUnavailable("Codex execution is only enabled on localhost in this prototype.")
+            raise RuntimeUnavailable("Agent execution is only enabled on localhost in this prototype.")
         if method == "GET" and rest == ["stream"]:
             return self._stream(sid, query)
         if method == "GET" and rest == ["workspace", "files"]:
@@ -755,8 +758,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, path.read_bytes(), ctype, {"Content-Disposition": "attachment; filename*=UTF-8''" + __import__("urllib.parse", fromlist=["quote"]).quote(path.name), "X-Content-Type-Options": "nosniff"})
         if method == "POST" and rest == ["workspace", "files"]:
             s = load(sid)
-            if s["phase"] not in ("pre", "chat") or s.get("runtime", {}).get("kind") != "codex":
-                raise ValueError("Workspace uploads are only available before/during Codex conversations")
+            if s["phase"] not in ("pre", "chat") or s.get("runtime", {}).get("kind") not in AGENT_KINDS:
+                raise ValueError("Workspace uploads are only available before/during agent conversations")
             if s["runtime"].get("active_turn") or s["runtime"].get("status") == "starting":
                 raise ValueError("Wait for the agent to finish before changing its files")
             n = int(self.headers.get("Content-Length") or 0)
@@ -852,9 +855,9 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 raise ValueError("empty message")
             s = load(sid)
-            if s.get("runtime", {}).get("kind") == "codex":
+            if s.get("runtime", {}).get("kind") in AGENT_KINDS:
                 if self.server.server_address[0] not in ("127.0.0.1", "::1"):
-                    raise RuntimeUnavailable("Codex execution is localhost-only")
+                    raise RuntimeUnavailable("Agent execution is localhost-only")
                 if s["phase"] != "chat":
                     raise ValueError("conversation phase is over")
                 client_id = body.get("client_message_id")
@@ -880,7 +883,7 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and rest == ["runtime", "connect"]:
             s = load(sid)
             if s["phase"] != "chat":
-                raise ValueError("Codex can only connect during the conversation phase")
+                raise ValueError("Agents can only connect during the conversation phase")
             get_runtime().get(sid)
             return self._send(200, load(sid)["runtime"])
         if method == "POST" and rest == ["runtime", "interrupt"]:
@@ -890,7 +893,11 @@ class Handler(BaseHTTPRequestHandler):
             s = load(sid)
             if s["phase"] != "chat":
                 raise ValueError("Conversation phase is over")
-            get_runtime().get(sid).approve(body.get("id"), body.get("decision"))
+            worker = get_runtime().get(sid)
+            if s["runtime"]["kind"] == "claude":
+                worker.approve(body.get("id"),body.get("decision"),body.get("answers"))
+            else:
+                worker.approve(body.get("id"),body.get("decision"))
             return self._send(200, {"ok": True})
 
         if method == "POST" and rest == ["marks"]:
@@ -960,6 +967,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, s["codes"][key])
 
         if method == "POST" and rest == ["import"]:
+            if load(sid).get("runtime",{}).get("kind") in AGENT_KINDS:
+                raise ValueError("Integrated agent transcripts cannot be replaced with imported logs. Create an external session instead.")
             uid = body.get("upload_id", "")
             if not re.fullmatch(r"[0-9a-f]{12}", uid):
                 raise ValueError("bad upload id")
@@ -976,8 +985,8 @@ class Handler(BaseHTTPRequestHandler):
                 events += ev
             with LOCK:
                 s = load(sid)
-                if s.get("runtime", {}).get("kind") == "codex":
-                    raise ValueError("Live Codex transcripts cannot be replaced with imported logs. Create an external session instead.")
+                if s.get("runtime", {}).get("kind") in AGENT_KINDS:
+                    raise ValueError("Integrated agent transcripts cannot be replaced with imported logs. Create an external session instead.")
                 imported = storage.import_events(s, events, name, bool(body.get("append")))
                 parsers.align_marks(s["marks"], imported)
                 s["imports"].append({"at": now()[0], "file": name, "members": members, "meta": meta,

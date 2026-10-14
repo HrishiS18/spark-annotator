@@ -35,7 +35,9 @@ const assert = require('node:assert/strict');
     page.on('dialog', dialog => dialog.accept());
     await page.goto(base);
     await page.locator('#start [name=participant_id]').fill('BROWSER-TEST');
-    assert.equal(await page.locator('#start [name=runtime]').inputValue(), 'codex');
+    const runtime=process.env.SPARK_BROWSER_RUNTIME || 'codex';
+    assert.deepEqual(await page.locator('#start [name=runtime] option').evaluateAll(rows=>rows.map(r=>r.value)),['codex','claude']);
+    await page.locator('#start [name=runtime]').selectOption(runtime);
     await page.locator('#start button[type=submit]').click();
     await page.waitForURL(/\/session\?id=/);
     await page.locator('#essay').fill('My initial approach is to inspect the available evidence and identify the most important decision first.');
@@ -175,6 +177,25 @@ const assert = require('node:assert/strict');
       const result = await fetch(base+url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       assert(result.ok); return result.json();
     };
+    if (runtime==='claude') {
+      const questionSession=await request('/api/sessions',{study:'dilemma',participant_id:'TEST-CLAUDE-QUESTION',runtime:'claude'});
+      await request('/api/sessions/'+questionSession.id+'/advance',{phase:'pre',text:'Synthetic baseline'});
+      const qpage=await context.newPage(); qpage.setDefaultTimeout(15000); qpage.on('pageerror',err=>errors.push(err.message));
+      await qpage.goto(base+'/session?id='+questionSession.id);
+      await qpage.waitForFunction(()=>document.querySelector('#runtime-panel')?.textContent.includes('ready'));
+      await qpage.locator('#input').fill('[ASK] Make a file'); await qpage.locator('#send').click();
+      await qpage.locator('.approval-card [data-answer="0"]').fill('Text, because I want a written explanation');
+      // Force reconnect/SSE refresh while a native question is pending.
+      await qpage.evaluate(()=>window.dispatchEvent(new Event('online')));
+      await qpage.locator('.approval-card [data-decision=accept]').click();
+      await qpage.waitForFunction(()=>document.querySelector('#runtime-panel')?.textContent.includes('ready'));
+      const qexport=await (await fetch(base+'/api/sessions/'+questionSession.id+'/export.json')).json();
+      assert(qexport.events.some(e=>e.meta?.source==='agent_question_answer' && e.text.includes('written explanation')));
+      await qpage.reload();
+      await qpage.waitForFunction(()=>document.querySelector('#runtime-panel')?.textContent.includes('ready'));
+      const recovered=await (await fetch(base+'/api/sessions/'+questionSession.id)).json();
+      assert.deepEqual(recovered.events.map(e=>e.id),qexport.events.map(e=>e.id));
+    }
     async function stateSession(pid, withMessage) {
       const s = await request('/api/sessions',{study:'dilemma',participant_id:pid,condition:withMessage?'human':'ai',room:pid});
       await request('/api/sessions/'+s.id+'/advance',{phase:'pre',text:'Synthetic baseline'});

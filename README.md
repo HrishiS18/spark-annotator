@@ -10,11 +10,25 @@ python3 -m venv .venv
 .venv/bin/python server.py
 ```
 
-Open http://127.0.0.1:8765. The default integrated partner is a **real Codex app-server agent** with streamed messages, command/file tools, explicit approvals, a task workspace, and interrupt/resume controls.
+Open http://127.0.0.1:8765. The two integrated AI choices are **Codex app-server** and **Claude Agent SDK**. Both use their native agent loops with streamed messages, command/file tools, approvals, a task workspace, and interrupt/resume controls. The default remains Codex.
 
 Codex must be installed on the execution host and signed in (`codex login`). The macOS desktop-app executable is detected if absent from PATH. Existing Codex/ChatGPT login works for local development; API-key authentication is also supported by the agent bridge using server-side configuration. Never put keys in participant messages or configuration files.
 
-Optional **Plain LLM chat** (Anthropic, no tools) and **Scripted demo** are explicitly selected alternatives. Live failures do not silently become demo responses. `SPARK_DEMO=1` does not disable Codex inference.
+New participant sessions cannot select plain LLM chat or scripted demo. Existing legacy data and internal synthetic fixtures remain supported; no live failures become demo responses.
+
+### Claude agent setup
+
+Install the pinned `claude-agent-sdk==0.2.165` from `requirements.txt` in the server virtual environment. It includes the Claude Code executable; participants do not need their own installation.
+
+Configure `ANTHROPIC_API_KEY` in the execution host environment before starting the server. Never put it in task text, Git, browser forms, or a committed settings file. The adapter does not use Claude subscription/OAuth login. [Official SDK overview](https://code.claude.com/docs/en/agent-sdk/overview).
+
+Claude uses `ClaudeSDKClient` in a private stdio subprocess, preserving the Claude Code system-prompt preset and appending the study persona. Native messages, tool calls/results, and questions become the same event format as Codex, with raw SDK evidence retained separately. Participant answers to native questions are saved before delivery to the agent. The baseline, flags and reviews are never passed to the task agent.
+
+Runtime settings: `SPARK_CLAUDE_MODEL` (default native `sonnet` alias; effective model recorded), `SPARK_CLAUDE_EFFORT` (default medium), `SPARK_CLAUDE_MAX_BUDGET_USD` (default 2, SDK estimated per-query cap; not a guaranteed billing ceiling). A single macOS Seatbelt boundary covers the SDK and its tool subprocesses: study records/peer workspaces are inaccessible and writes are restricted to the task workspace and OS temporary directories. Native Bash sandboxing is explicitly off because Seatbelt cannot be nested; this is not an unsandboxed fallback. Writes/commands require participant approval, direct file paths are checked, and the native subprocess credential scrub is enabled. Personal settings, skills, plugins, MCP connectors, and subagents are disabled in this controlled prototype. Approved commands can access the network; this is not network-isolated.
+
+Each session persists native SDK state under `data/workspaces/<session-id>/.runtime/claude/`, separate from the app transcript. This folder is excluded from artifact browsing and direct agent file-tool access. Reconnect replays native history without inference, preserving event IDs and original click snapshots. This is not full host/credential isolation; do not deploy this using a shared researcher's key without proper isolation and quotas.
+
+Verified locally with SDK **0.2.165**, Claude Code **2.1.294**, and effective model **claude-sonnet-5-5**. [Python SDK reference](https://code.claude.com/docs/en/agent-sdk/python).
 
 ## Participant flow
 
@@ -85,7 +99,7 @@ Batch judging is an explicit inference action:
 
 ## External-agent recording
 
-Open `/record` in desktop Chrome/Edge. Share screen (video only), pop out the optional always-on-top Flag button, work in Codex/Claude Code/etc., then end recording and attach selected agent logs. Video is uploaded in 4-second chunks. Screen capture requires localhost or HTTPS; macOS screen-recording permission may also be needed.
+Open `/record` in desktop Chrome/Edge. Share screen (video only), pop out the optional always-on-top Flag button, work in Codex or Claude Code, then end recording and attach selected agent logs. Video is uploaded in 4-second chunks. Screen capture requires localhost or HTTPS; macOS screen-recording permission may also be needed.
 
 Logs: Codex `~/.codex/sessions/.../rollout-*.jsonl`, Claude Code `~/.claude/projects/.../*.jsonl`. JSON, JSONL, and exporter ZIPs are supported. Web-chat users can skip logs and review timestamped bookmarks from video.
 
@@ -108,7 +122,7 @@ Study data is local to the execution host, **not model inference**. Codex also m
 
 ## Prototype limits
 
-**macOS execution host + localhost only for integrated Codex.** The macOS privacy fence protects study records and other sessions' workspaces. Workspace-write sandboxing and explicit approvals do not provide full host/credential isolation. Use synthetic, non-sensitive tasks during development.
+**macOS execution host + localhost only for integrated agents.** Python 3.10+ is required for the Claude SDK. The macOS privacy fence protects study records and other sessions' workspaces. Sandboxing and explicit approvals do not provide full host/credential isolation. Use synthetic, non-sensitive tasks during development.
 
 Researcher/participant authentication, hosted execution isolation, quotas, resource limits, pairing/deployment hardening, multi-coder blind adjudication, and validated judge evaluation remain unfinished. UI/API-view hiding of suggestions is a study-flow safeguard, **not an authorization boundary**; researcher/export routes are currently unauthenticated. Do not expose this publicly or share a researcher's ChatGPT login as a hosted service credential.
 
@@ -125,6 +139,7 @@ No model calls in unit/API or headless browser tests:
 ```bash
 SPARK_QUIET=1 .venv/bin/python -m unittest discover -s tests -v
 node tests/browser_smoke.cjs
+SPARK_BROWSER_RUNTIME=claude node tests/browser_smoke.cjs
 ```
 
 Browser QA requires Playwright plus Chrome/Chromium; optionally set `NODE_PATH` and `SPARK_CHROME_PATH`. Covers agent controls, offline bookmark recovery, exposure snapshots, autosave/reload, multi-event passages, missed moments, automatic suggestion generation without duplicate calls, blinding, failure/retry and missing/empty states, independent-pass locking, and exports.
@@ -134,6 +149,7 @@ Live tests are separately opt-in, **synthetic only**, and consume account usage:
 ```bash
 .venv/bin/python tests/live_smoke.py --run-live
 .venv/bin/python tests/live_judge_smoke.py --run
+.venv/bin/python tests/live_claude_smoke.py --run-live --key-stdin
 ```
 
 ## Code map
@@ -142,6 +158,9 @@ Live tests are separately opt-in, **synthetic only**, and consume account usage:
 server.py             API, streaming, recording, imports, exports
 storage.py            transactional records and historical projections
 codex_runtime.py      agent app-server bridge, approvals, workspace, resume
+agent_runtime.py      shared provider dispatch (Codex / Claude only)
+claude_runtime.py     Claude event/approval adapter, native-session recovery
+claude_sdk_worker.py  isolated official SDK client with native tools/prompt
 annotations.py        participant reviews, evidence passages, locking
 judge.py              blinded LLM coding, quote/ID validation
 judge_backend.py      restricted Codex judge / optional API adapter

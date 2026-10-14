@@ -9,7 +9,7 @@
 <body>
 <div class="landing">
   <div class="landing-head"><span id="logo"></span><h1 style="margin:0">Spark Annotator</h1><span id="parser-pill" class="status-pill live"></span></div>
-  <p class="muted" style="margin-top:4px">Work with a real Codex agent in the study interface, bookmark insights, and review the saved conversation afterwards. External-agent screen recording remains available as a separate workflow.</p>
+  <p class="muted" style="margin-top:4px">Work with Codex or a Claude agent in the same study interface, bookmark insights, and review the saved conversation afterwards. External-agent screen recording remains available as a separate workflow.</p>
 
   <div class="cards">
     <div class="card">
@@ -17,7 +17,7 @@
       <ol class="steps-list">
         <li>On the participant's computer (Windows, macOS, Linux or ChromeOS) open <a href="/record"><code>/record</code></a> in <b>Chrome or Edge</b>. Nothing to install.</li>
         <li>They enter their ID, press <b>Share my screen &amp; start recording</b> and choose <i>Entire screen</i>. Video only, no sound.</li>
-        <li>They press <b>Pop out the Flag button</b>: a small Flag button floats on top of every window, including their agent (Codex, Claude Code, ChatGPT…). Each press timestamps that moment; they can pick a spark type or just <i>bookmark</i> it to explain later.</li>
+        <li>They press <b>Pop out the Flag button</b>: a small Flag button floats on top of every window, including Codex or Claude Code. Each press timestamps that moment; they can pick a spark type or just <i>bookmark</i> it to explain later.</li>
         <li><b>End session</b> saves the recording (it uploads continuously while recording), they attach their agent's log, and the review opens, where they rewatch each flagged minute and annotate it.</li>
       </ol>
       <form id="code-form" class="row" style="margin-top:14px">
@@ -37,7 +37,7 @@
 
   <details class="card" style="margin-top:16px" open>
     <summary style="cursor:pointer"><b>Integrated agent study</b> <span class="muted small">(task → baseline → agent conversation → final answer → review)</span></summary>
-    <p class="small muted">Codex runs on this Mac with command execution and file tools. <span id="codex-status"></span> After the conversation, the task, baseline and visible transcript are sent automatically to a separate LLM judge to suggest moments for review. Bookmarks and annotations are excluded. This uses provider/account usage; no API keys belong in this form. Local prototype, not a deployed study service.</p>
+    <p class="small muted">Both agent runtimes run on this Mac with command execution and file tools. <span id="codex-status"></span> After the conversation, the task, baseline and visible transcript are sent automatically to a separate LLM judge to suggest moments for review. Bookmarks and annotations are excluded. This uses provider/account usage; no API keys belong in this form. Local prototype, not a deployed study service.</p>
     <form id="start" style="max-width:480px">
       <label class="field"><span>Participant ID</span><input type="text" name="participant_id" placeholder="e.g. P014" required></label>
       <label class="field"><span>Study</span><select name="study"></select></label>
@@ -51,8 +51,7 @@
       </label>
       <label class="field" id="runtime-field"><span>AI runtime</span><select name="runtime">
         <option value="codex">Codex agent — real tools and workspace</option>
-        <option value="plain">Plain LLM chat — no tools (Anthropic)</option>
-        <option value="demo">Scripted demo — no live model</option>
+        <option value="claude">Claude agent — Claude Agent SDK, real tools and workspace</option>
       </select></label>
       <p class="small muted" id="llm"></p>
       <label class="field hidden" id="room-field"><span>Room code (both partners enter the same code)</span><input type="text" name="room" placeholder="e.g. BLUE7"></label>
@@ -74,7 +73,7 @@ $$("[data-ic]").forEach((el) => (el.outerHTML = icon(el.dataset.ic)));
 const cfg = await config();
 $("#parser-pill").textContent = `LLM judge v${cfg.judge.version} · ${cfg.judge.automatic ? 'automatic suggestions' : 'manual judging'}`;
 $("#codex-status").textContent = cfg.runtime.installed ? `Installed: ${cfg.runtime.version}. Sign in with codex login if needed.` : "Codex is not installed on the execution host.";
-$("#llm").textContent = cfg.llm.live ? `Optional plain chat is configured: ${cfg.llm.model}.` : "Optional plain chat is not configured. It will report an error, not silently switch to demo.";
+$("#llm").textContent = cfg.runtimes?.claude?.configured ? `Claude Agent SDK ${cfg.runtimes.claude.sdk_version} is configured on this host.` : "Claude agent needs the SDK and ANTHROPIC_API_KEY configured on this host. No subscription-login or scripted fallback.";
 
 $("#tax").innerHTML = cfg.taxonomy.types.map((t) => `
   <div class="tax" style="--tc:${TYPE_COLOR[t.key]}"><b>${icon(t.icon)}${esc(t.label)}</b>

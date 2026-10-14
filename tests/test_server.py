@@ -13,6 +13,9 @@ import server
 from codex_runtime import RuntimeManager
 from storage import Store
 from tests.test_runtime import FakeRpc
+from agent_runtime import RuntimeManager as AgentManager
+from claude_runtime import ClaudeRuntimeManager
+import sys
 
 
 class ServerTests(unittest.TestCase):
@@ -23,7 +26,9 @@ class ServerTests(unittest.TestCase):
             (root / directory).mkdir()
         self.store = Store(root / "study.sqlite3", write_lock=server.LOCK)
         self.runtime = RuntimeManager(self.store, root, rpc_factory=FakeRpc, command=["test"])
-        self.patches = [patch.object(server, "_STORE", self.store), patch.object(server, "_RUNTIME", self.runtime),
+        self.claude=ClaudeRuntimeManager(self.store,root,command=[sys.executable,str(Path(__file__).with_name("mock_claude_worker.py"))])
+        self.agents=AgentManager(self.store,root,codex=self.runtime,claude=self.claude)
+        self.patches = [patch.object(server, "_STORE", self.store), patch.object(server, "_RUNTIME", self.agents),
                         patch.object(server, "UPLOADS", str(root / "uploads")),
                         patch.object(server, "RECORDINGS", str(root / "recordings")),
                         patch.object(server.judge, "status", return_value={"live":True,"provider":"test","model":"test","version":"test"}),
@@ -37,7 +42,7 @@ class ServerTests(unittest.TestCase):
 
     def tearDown(self):
         self.httpd.stream_shutdown = True
-        self.runtime.close()
+        self.agents.close()
         self.httpd.shutdown()
         self.httpd.server_close()
         self.thread.join(timeout=3)
@@ -59,7 +64,11 @@ class ServerTests(unittest.TestCase):
                 return exc.code, json.loads(exc.read())
 
     def create(self, **extra):
-        code, s = self.request("/api/sessions", {"study": "dilemma", "participant_id": "TEST", **extra}, "POST")
+        body = {"study":"dilemma","participant_id":"TEST",**extra}
+        if extra.get("runtime") in ("plain","demo"):
+            s,code = server.create_session(body,allow_legacy=True),201
+        else:
+            code,s = self.request("/api/sessions",body,"POST")
         self.assertEqual(code, 201)
         self.sid = s["id"]
         self.prefix = f"/api/sessions/{self.sid}"
@@ -319,6 +328,33 @@ class ServerTests(unittest.TestCase):
             self.request(self.prefix+"/judge/ensure",{},"POST")
             self.assertEqual(self.store.load(self.sid)["judge"]["status"],"disabled")
             model.assert_not_called()
+
+    def test_claude_native_question_tools_and_private_workspace_routes(self):
+        self.create(runtime="claude")
+        self.assertEqual(self.request(self.prefix+"/runtime/connect",{},"POST")[0],200)
+        self.assertEqual(self.request(self.prefix+"/workspace/files",b"Test","POST",{"X-Filename":"input.txt"},raw=True)[0],201)
+        self.assertEqual(self.request(self.prefix+"/message",{"text":"[ASK] Make a file","client_message_id":"claude-api-test-0001"},"POST")[0],202)
+        for _ in range(100):
+            rt=self.store.load(self.sid)["runtime"]
+            if rt.get("approvals"): break
+            time.sleep(.02)
+        a=rt["approvals"][0]
+        self.assertEqual(a["method"],"claude/question")
+        self.assertEqual(self.request(self.prefix+"/runtime/approval",{"id":a["id"],"decision":"accept"},"POST")[0],400)
+        self.assertEqual(self.request(self.prefix+"/runtime/approval",{"id":a["id"],"decision":"accept",
+            "answers":{"Which format should I use?":"Text"}},"POST")[0],200)
+        for _ in range(100):
+            if self.store.load(self.sid)["runtime"].get("last_turn_status")=="completed": break
+            time.sleep(.02)
+        self.assertEqual(self.request(self.prefix+"/workspace/file?path=.runtime/claude/fake-history.json")[0],404)
+        self.assertEqual(self.request(self.prefix+"/import",{"upload_id":"000000000000"},"POST")[0],400)
+        self.assertEqual(self.store.load(self.sid)["runtime"]["kind"],"claude")
+
+    def test_only_two_new_ai_runtime_choices(self):
+        for kind in ("plain","demo","unknown"):
+            self.assertEqual(self.request("/api/sessions",{"study":"dilemma","runtime":kind},"POST")[0],400)
+        config=self.request("/api/config")[1]
+        self.assertEqual(set(config["runtimes"]),{"codex","claude"})
 
 
 if __name__ == "__main__":

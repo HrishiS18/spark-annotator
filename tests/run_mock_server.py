@@ -6,11 +6,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server
 from codex_runtime import RuntimeManager
+from agent_runtime import RuntimeManager as AgentManager
+from claude_runtime import ClaudeRuntimeManager
 
 manager = RuntimeManager(server.get_store(), server.DATA,
                          command=[sys.executable, str(Path(__file__).with_name("mock_app_server.py"))])
 manager.version = "mock-app-server (TEST ONLY)"
-server._RUNTIME = manager
+claude=ClaudeRuntimeManager(server.get_store(),server.DATA,
+                          command=[sys.executable,str(Path(__file__).with_name("mock_claude_worker.py"))])
+server._RUNTIME = AgentManager(server.get_store(),server.DATA,codex=manager,claude=claude)
 
 def fake_judge(session):
     """Explicitly synthetic predictions; never calls a model in browser QA."""

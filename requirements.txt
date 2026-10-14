@@ -1,1 +1,2 @@
 anthropic>=1.0  # optional: LLM judge / explicitly selected plain chat; Codex bridge is stdlib-only
+claude-agent-sdk==0.2.165  # official Claude Code runtime, includes its CLI
