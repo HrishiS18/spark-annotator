@@ -314,8 +314,11 @@ def load_member(filename, data, member):
 
 
 def align_marks(marks, events):
-    """Attach wall-clock marks (from the companion window) to the agent output
-    that was most recently on screen when the participant tapped."""
+    """Suggest context for timestamp-only bookmarks; never infer a causal anchor.
+
+    Explicit participant-selected anchors survive imports unchanged. The review
+    asks the participant to select a passage before committing an episode.
+    """
     timed = [e for e in events if e.get("t")]
     for m in marks:
         if m.get("event_id") and any(e["id"] == m["event_id"] for e in events):
@@ -327,8 +330,8 @@ def align_marks(marks, events):
         agent_side = [e for e in visible if e["role"] in ("assistant", "tool_call", "tool_result")]
         target = (agent_side or visible or timed[:1])
         if target:
-            m["event_id"] = target[-1]["id"]
-            m["aligned"] = True
+            m["proposed_event_id"] = target[-1]["id"]
+            m["alignment"] = "timestamp_context_suggestion"
     return marks
 
 

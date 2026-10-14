@@ -29,9 +29,9 @@
 
     <div class="card">
       <h2><span data-ic="eye"></span>Review &amp; analyse</h2>
-      <p>The dashboard lists every session. Open one to see the participant's flags, the codebook parser's candidates (with the rules and words that fired) and the before/after attribution on one timeline. <b>Recording review</b> plays the screen recording with flags and transcript in sync.</p>
+      <p>The dashboard separates participant reports from evidence-grounded LLM suggestions. Participants review their own moments before seeing model suggestions. The same transcript review supports integrated chat and external recordings.</p>
       <a class="btn" href="/researcher">Open dashboard</a>
-      <p class="small muted" style="margin-bottom:0">Exports: <a href="/api/export/marks.csv">flags</a> · <a href="/api/export/candidates.csv">parser candidates</a> · <a href="/api/export/parse.csv">per-turn parse features</a></p>
+      <p class="small muted" style="margin-bottom:0">Exports: <a href="/api/export/marks.csv">participant annotations</a> · <a href="/api/export/candidates.csv">LLM suggestions</a></p>
     </div>
   </div>
 
@@ -62,7 +62,7 @@
 
   <div class="card" style="margin-top:16px">
     <h2><span data-ic="sparkle"></span>Spark types captured</h2>
-    <p class="small muted" style="margin:0">Participants see the plain-language phrasing in the Flag menu and the review; the parser and dashboard use the type labels.</p>
+    <p class="small muted" style="margin:0">Real-time tags are optional. Participants can confirm, question, or reject a bookmark later without choosing a category.</p>
     <div class="tax-grid" id="tax"></div>
   </div>
 </div>
@@ -72,7 +72,7 @@ import { api, icon, esc, config, TYPE_COLOR, $, $$ } from "/static/common.js";
 document.getElementById("logo").innerHTML = icon("bulb");
 $$("[data-ic]").forEach((el) => (el.outerHTML = icon(el.dataset.ic)));
 const cfg = await config();
-$("#parser-pill").textContent = `Codebook parser v${cfg.codebook.version} · no API needed`;
+$("#parser-pill").textContent = `LLM judge v${cfg.judge.version} · researcher-triggered`;
 $("#codex-status").textContent = cfg.runtime.installed ? `Installed: ${cfg.runtime.version}. Sign in with codex login if needed.` : "Codex is not installed on the execution host.";
 $("#llm").textContent = cfg.llm.live ? `Optional plain chat is configured: ${cfg.llm.model}.` : "Optional plain chat is not configured. It will report an error, not silently switch to demo.";
 

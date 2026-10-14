@@ -1,5 +1,5 @@
 {
-  "_comment": "Single source of truth for spark types. `participant` is the plain-language phrasing shown in the Mark-moment popover; `label` and `definition` are for researchers and the LLM detector.",
+  "_comment": "Provisional definitions and optional participant wording. Descriptive cues are documentation, never an automatic lexical classifier. The LLM judge uses definitions, not cues.",
   "types": [
     {
       "key": "additive",

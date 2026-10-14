@@ -1,7 +1,7 @@
 // Shared helpers: API, icons, taxonomy, and the Mark-moment popover component.
 
-export const api = async (method, url, body, headers = {}) => {
-  const opts = { method, headers: { ...headers } };
+export const api = async (method, url, body, headers = {}, options = {}) => {
+  const opts = { method, headers: { ...headers }, signal: options.signal };
   if (body instanceof Blob || body instanceof ArrayBuffer) opts.body = body;
   else if (body !== undefined) { opts.body = JSON.stringify(body); opts.headers["Content-Type"] = "application/json"; }
   const res = await fetch(url, opts);
@@ -66,12 +66,12 @@ export function renderText(text) {
 const inline = (s) => s.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 
 /**
- * The "What happened?" popover. The mark is already saved when this opens;
+ * The "What happened?" popover. The mark is already queued when this opens;
  * picking a type only annotates it, so the popover is skippable by design.
  * Closes on an outside click, when the participant resumes typing, or after `timeout` ms
  * of no interaction, so it never blocks the conversation.
  */
-export function openMarkPopover({ anchor, cfg, onPick, onClose, timeout = 30000, title = "What happened?" }) {
+export function openMarkPopover({ anchor, cfg, onPick, onClose, timeout = 15000, title = "What happened?", saveMessage = "Moment saved. Add a quick tag if you like." }) {
   closeMarkPopover();
   const pop = document.createElement("div");
   pop.className = "mark-pop";
@@ -82,7 +82,7 @@ export function openMarkPopover({ anchor, cfg, onPick, onClose, timeout = 30000,
       <span class="mark-pop-title">${esc(title)}</span><span class="muted">Optional</span>
       <button class="icon-btn mark-pop-close" aria-label="Close">${icon("x")}</button>
     </div>
-    <div class="mark-pop-saved">${icon("check")} Moment saved. Add a quick tag if you like.</div>
+    <div class="mark-pop-saved">${icon("bookmark")} ${esc(saveMessage)}</div>
     <div class="mark-pop-list">
       ${cfg.taxonomy.types.map((t) => `
         <button class="mark-opt" data-type="${t.key}" style="--tc:${TYPE_COLOR[t.key]}">
@@ -140,74 +140,6 @@ export function toast(msg) {
 
 export const isMarkHotkey = (e) => e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "m" || e.key === "M");
 
-// ------------------------------------------------------------------ shared annotation form
-
-/** The post-hoc annotation form for one mark (types, before/after, uptake, timing, size). */
-export function annotationFormHTML(cfg, m, { external = false } = {}) {
-  const r = m.review || {};
-  const types = r.types || (m.quick_type ? [m.quick_type] : []);
-  const primary = r.primary || types[0] || null;
-  const chip = (t) => `<button class="chip ${types.includes(t.key) ? "on" : ""} ${primary === t.key ? "primary" : ""}" data-type="${t.key}" style="--tc:${TYPE_COLOR[t.key] || "var(--text-3)"}">
-      ${icon(t.icon)}<span>${esc(t.participant)}</span><span class="star" title="Main one">${icon("star")}</span></button>`;
-  const opt = (name, list, val) => list.map((o) => `<button class="chip ${val === o.key ? "on" : ""}" data-${name}="${o.key}">${esc(o.participant)}</button>`).join("");
-  return `<div class="annot">
-    <div class="qlabel">What happened? <span class="muted">Pick any that fit; tap ★ for the main one.</span></div>
-    <div class="chips" data-group="types">${cfg.taxonomy.types.map(chip).join("")}
-      ${chip({ key: "other", icon: "sparkle", participant: "Something else" })}</div>
-    <div class="two" style="margin-top:12px">
-      <label class="field" style="margin:0"><span>Before this moment, what were you thinking${external ? " or planning" : ""}?</span><textarea data-f="before">${esc(r.before || "")}</textarea></label>
-      <label class="field" style="margin:0"><span>What changed for you?</span><textarea data-f="after">${esc(r.after || "")}</textarea></label>
-    </div>
-    <div class="qlabel">How did you take it up?</div>
-    <div class="chips" data-group="uptake">${opt("uptake", cfg.taxonomy.uptake, r.uptake)}</div>
-    <div class="qlabel">When did it click?</div>
-    <div class="chips" data-group="latency">${opt("latency", cfg.taxonomy.latency, r.latency)}</div>
-    <div class="qlabel">How big a shift was it?</div>
-    <div class="row"><span class="small muted">small</span><div class="scale">${[1, 2, 3, 4, 5].map((v) => `<button data-int="${v}" class="${r.intensity === v ? "on" : ""}">${v}</button>`).join("")}</div><span class="small muted">big</span></div>
-    <div class="row" style="margin-top:16px"><button class="btn btn-primary btn-sm" data-save>Save</button>
-      <button class="btn btn-sm btn-ghost muted" data-remove>Not really a moment, remove it</button></div>
-  </div>`;
-}
-
-export function wireAnnotationForm(root, m, { sid, onSaved, onRemoved }) {
-  const st = { types: [...(m.review?.types || (m.quick_type ? [m.quick_type] : []))], primary: m.review?.primary || m.quick_type || null,
-    uptake: m.review?.uptake || null, latency: m.review?.latency || null, intensity: m.review?.intensity || null };
-  const paintTypes = () => $$('[data-group="types"] .chip', root).forEach((c) => {
-    c.classList.toggle("on", st.types.includes(c.dataset.type));
-    c.classList.toggle("primary", st.primary === c.dataset.type);
-  });
-  $$('[data-group="types"] .chip', root).forEach((c) => (c.onclick = (e) => {
-    const k = c.dataset.type;
-    if (e.target.closest(".star") && st.types.includes(k)) { st.primary = k; return paintTypes(); }
-    st.types = st.types.includes(k) ? st.types.filter((x) => x !== k) : [...st.types, k];
-    if (!st.types.includes(st.primary)) st.primary = st.types[0] || null;
-    paintTypes();
-  }));
-  for (const g of ["uptake", "latency"]) {
-    $$(`[data-${g}]`, root).forEach((c) => (c.onclick = () => {
-      st[g] = c.dataset[g];
-      $$(`[data-${g}]`, root).forEach((x) => x.classList.toggle("on", x === c));
-    }));
-  }
-  $$("[data-int]", root).forEach((b) => (b.onclick = () => {
-    st.intensity = +b.dataset.int;
-    $$("[data-int]", root).forEach((x) => x.classList.toggle("on", x === b));
-  }));
-  $("[data-save]", root).onclick = async () => {
-    if (!st.types.length) return toast("Pick at least one option under “What happened?”");
-    const review = { ...st, before: $('[data-f="before"]', root).value, after: $('[data-f="after"]', root).value };
-    await api("PATCH", `/api/sessions/${sid}/marks/${m.id}`, { review });
-    m.review = review;
-    toast("Saved");
-    onSaved?.(m);
-  };
-  $("[data-remove]", root).onclick = async () => {
-    if (!confirm("Remove this moment?")) return;
-    await api("PATCH", `/api/sessions/${sid}/marks/${m.id}`, { deleted: true });
-    m.deleted = true;
-    onRemoved?.(m);
-  };
-}
 
 export const fmtClock = (sec) => {
   if (sec == null || !isFinite(sec)) return "–:––";

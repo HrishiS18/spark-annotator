@@ -11,4 +11,16 @@ manager = RuntimeManager(server.get_store(), server.DATA,
                          command=[sys.executable, str(Path(__file__).with_name("mock_app_server.py"))])
 manager.version = "mock-app-server (TEST ONLY)"
 server._RUNTIME = manager
+
+def fake_judge(session):
+    """Explicitly synthetic predictions; never calls a model in browser QA."""
+    trigger = next(e for e in session["events"] if e["role"] == "assistant")
+    return [{"source":"judge","start_event_id":trigger["id"],"end_event_id":trigger["id"],
+             "trigger_event_id":trigger["id"],"uptake_event_id":"","type":"additive",
+             "secondary_type":"none","insight_evidence":"possible","persuasion":"unclear",
+             "copying":"not_observed","uptake":"unclear","strength":"low",
+             "trigger_quote":trigger["text"],"uptake_quote":"","before":"","after":"",
+             "rationale":"SYNTHETIC_TEST_SUGGESTION","quotes_verified":True}], {"summary":"SYNTHETIC_TEST_SUMMARY","model":"TEST ONLY"}
+
+server.judge.run = fake_judge
 server.main()

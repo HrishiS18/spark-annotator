@@ -6,12 +6,14 @@
 //   floating button  Document Picture-in-Picture (Chrome / Edge 116+ on Windows, macOS,
 //                    Linux, ChromeOS); other browsers get a small popup window instead
 import { api, icon, esc, $, $$, config, toast, TYPE_COLOR, fmtClock } from "/static/common.js";
+import { BookmarkOutbox } from "/static/bookmarks.js";
 
 const params = new URLSearchParams(location.search);
 let cfg, S = null;
 let stream = null, recorder = null, mime = "", t0 = null, seq = 0;
 let uploadChain = Promise.resolve(), uploadedBytes = 0, uploadErrors = 0;
 let flags = [], lastFlag = null, pip = null, collapseTimer = null, sessionStart = null, finishing = false;
+let bookmarkOutbox = null;
 
 const support = {
   capture: !!navigator.mediaDevices?.getDisplayMedia,
@@ -98,12 +100,24 @@ async function start(form) {
     });
   };
   flags = (S.marks || []).filter((m) => !m.deleted).map((m) => ({ id: m.id, t: m.t, type: m.quick_type, synced: true }));
+  bookmarkOutbox = new BookmarkOutbox(S.id, (pending, mark) => {
+    if (mark) {
+      const f = flags.find(x => x.id === mark.id);
+      if (f) Object.assign(f, { synced: true, client_version: mark.client_version });
+    }
+    for (const row of pending) {
+      let f = flags.find(x => x.id === row.body.id);
+      if (!f) { f = { id: row.body.id, t: row.body.t, type: row.body.quick_type }; flags.push(f); }
+      Object.assign(f, { synced: false, client_version: row.body.client_version, deleted: row.body.deleted, type: row.body.quick_type });
+    }
+    if ($("#view")) paintStatus();
+  });
   recorder.start(4000);
   recordingView(st.displaySurface);
   addEventListener("beforeunload", warnLeave);
 }
 
-const warnLeave = (e) => { if (recorder && recorder.state !== "inactive") { e.preventDefault(); e.returnValue = ""; } };
+const warnLeave = (e) => { if (recorder && recorder.state !== "inactive" || bookmarkOutbox?.pending().length) { e.preventDefault(); e.returnValue = ""; } };
 
 // ------------------------------------------------------------------ chunk upload
 
@@ -157,6 +171,8 @@ function paintStatus() {
   $("#rec-up") && ($("#rec-up").textContent = `${(uploadedBytes / 1e6).toFixed(1)} MB saved${uploadErrors ? " · retrying upload…" : ""}`);
   $("#count-here") && ($("#count-here").textContent = live().length);
   pip && $(".pip-time", pip.document) && ($(".pip-time", pip.document).textContent = t);
+  if (pip && lastFlag && $(".pip-head-t", pip.document)) $(".pip-head-t", pip.document).textContent =
+    `${lastFlag.synced ? 'Saved' : bookmarkOutbox?.storageAvailable ? 'On this device · syncing' : 'Syncing · keep this tab open'} at ${fmtClock(lastFlag.t - t0)} ·`;
   const list = $("#flag-list");
   if (list) list.innerHTML = live().slice().reverse().map((f) => {
     const ty = cfg.taxonomy.types.find((x) => x.key === f.type);
@@ -236,7 +252,7 @@ function showMenu(open) {
   if (!pip) return;
   const d = pip.document;
   $(".pip-menu", d).classList.toggle("hidden", !open);
-  if (open && lastFlag) $(".pip-head-t", d).textContent = `Flagged at ${fmtClock(lastFlag.t - t0)} ·`;
+  if (open && lastFlag) $(".pip-head-t", d).textContent = `${lastFlag.synced ? 'Saved' : 'On this device · syncing'} at ${fmtClock(lastFlag.t - t0)} ·`;
   try { pip.resizeTo(...(open ? PIP_BIG : PIP_SMALL).map((v, i) => v + (i ? pip.outerHeight - pip.innerHeight : 0))); } catch { /* needs a click */ }
   pip.clearTimeout(collapseTimer);
   if (open) collapseTimer = pip.setTimeout(() => showMenu(false), 15000);
@@ -253,7 +269,8 @@ function flag() {
   const f = { id: rid(), t: Date.now() / 1000, type: null, synced: false };
   flags.push(f);
   lastFlag = f;
-  syncFlag(f);
+  bookmarkOutbox.create({ id: f.id, t: f.t, quick_type: null, source: "overlay", anchor: "timestamp",
+                         phase_at_click: "chat", exposure: { surface: "external" } });
   paintPipCount();
   paintStatus();
   if (pip) showMenu(true); else toast(`Flagged at ${fmtClock(f.t - t0)}`);
@@ -279,10 +296,10 @@ function undo() {
 }
 
 async function syncFlag(f) {
-  try {
-    await api("POST", `/api/sessions/${S.id}/marks`, { id: f.id, t: f.t, quick_type: f.type, deleted: !!f.deleted, source: "overlay", anchor: "timestamp" });
-    f.synced = true;
-  } catch { /* retried at the end */ }
+  bookmarkOutbox.update(f.id, { quick_type: f.type, deleted: !!f.deleted },
+    { id: f.id, t: f.t, source: "overlay", anchor: "timestamp", phase_at_click: "chat", client_version: f.client_version || 1,
+      exposure: { surface: "external" } });
+  await bookmarkOutbox.flush();
   paintStatus();
 }
 
@@ -291,7 +308,6 @@ async function syncFlag(f) {
 async function finish(reason) {
   if (finishing) return;
   finishing = true;
-  removeEventListener("beforeunload", warnLeave);
   setState("Saving…");
   if (pip) { try { pip.close(); } catch { /* ignore */ } pip = null; }
   const duration = elapsed();
@@ -302,12 +318,19 @@ async function finish(reason) {
   $("#view").innerHTML = `<div class="card"><h2>Saving your recording…</h2><p class="muted" id="save-msg">${reason ? esc(reason) + " " : ""}Uploading the last part.</p></div>`;
   await uploadChain;
   for (const f of flags.filter((x) => !x.synced)) await syncFlag(f);
+  if (!await bookmarkOutbox.flush()) {
+    finishing = false;
+    $("#save-msg").textContent = "Bookmarks are stored on this device but not synced yet. Reconnect, then retry ending the session.";
+    const retry = document.createElement("button"); retry.className = "btn"; retry.textContent = "Retry save";
+    retry.onclick = () => finish(reason); $("#save-msg").after(retry); return;
+  }
   try {
     await api("POST", `/api/sessions/${S.id}/recording/finish`, { duration });
   } catch (err) {
     $("#save-msg").textContent = `Could not finalise the recording: ${err.message}. Please tell the researcher.`;
     return;
   }
+  removeEventListener("beforeunload", warnLeave);
   transcriptView();
 }
 

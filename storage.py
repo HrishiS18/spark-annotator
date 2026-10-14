@@ -277,7 +277,7 @@ def import_events(session, incoming, source, append=False):
 def record_analysis_run(session, source, candidates, metadata, configuration):
     run_id = "run_" + uuid.uuid4().hex
     run = {"id": run_id, "source": source, "created_t": time.time(),
-           "input_event_ids": [e["id"] for e in session["events"]],
+           "input_event_ids": copy.deepcopy(metadata.get("input_event_ids", [e["id"] for e in session["events"]])),
            "configuration": copy.deepcopy(configuration), "metadata": copy.deepcopy(metadata),
            "candidates": copy.deepcopy(candidates)}
     session.setdefault("analysis_runs", []).append(run)

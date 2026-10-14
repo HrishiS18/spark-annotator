@@ -1,7 +1,8 @@
 import {
   api, icon, esc, $, $$, config, renderText, openMarkPopover, closeMarkPopover, toast, TYPE_COLOR, typeByKey,
-  fmtTime, isMarkHotkey, annotationFormHTML, wireAnnotationForm,
+  fmtTime, isMarkHotkey,
 } from "/static/common.js";
+import { BookmarkOutbox, captureExposure } from "/static/bookmarks.js";
 
 const sid = new URLSearchParams(location.search).get("id");
 let cfg, S, study;
@@ -11,6 +12,7 @@ let eventStream = null;
 let connecting = false;
 let pendingMessage = null;
 let workspaceRefresh = null;
+let bookmarkOutbox = null;
 const isCodex = () => S.runtime?.kind === "codex";
 const PHASE_LABEL = { pre: "Before", chat: "Conversation", post: "After", review: "Review", done: "Done" };
 const CHAT_ROLES = ["user", "assistant", "partner"];
@@ -83,6 +85,7 @@ function route() {
 }
 
 async function advance(text) {
+  if (bookmarkOutbox && !await bookmarkOutbox.flush()) return toast("Bookmarks are still syncing. Reconnect before leaving this session.");
   await api("POST", `/api/sessions/${sid}/advance`, { phase: S.phase, text });
   await load();
   route();
@@ -153,6 +156,7 @@ function renderThread() {
   $("#thread").innerHTML = evs.length ? evs.map(msgHTML).join("") : `<div class="empty-chat">${esc(intro)}</div>`;
   $$("details[data-tool]").forEach((el) => { el.open = opened.has(el.dataset.tool); });
   $("#fab-count").textContent = S.marks.filter((m) => !m.deleted).length;
+  paintBookmarkStatus();
 }
 
 function scrollBottom() { const c = $("#content"); c.scrollTop = c.scrollHeight; }
@@ -167,6 +171,18 @@ function chatView() {
     <div class="thread" id="thread"></div><div id="typing"></div></div>`;
   $("#composer-wrap").classList.remove("hidden");
   $("#fab").classList.remove("hidden");
+  if (!bookmarkOutbox) bookmarkOutbox = new BookmarkOutbox(sid, (pending, mark) => {
+    if (mark) {
+      const current = S.marks.find(m => m.id === mark.id);
+      if (current) Object.assign(current, mark); else S.marks.push(mark);
+    }
+    for (const row of pending) {
+      const current = S.marks.find(m => m.id === row.body.id);
+      if (current) Object.assign(current, row.body, { sync_state: row.state });
+      else S.marks.push({ ...row.body, review: null, t: row.body.t ?? row.body.client_t / 1000, sync_state: row.state });
+    }
+    if (S.phase === "chat" && $("#thread")) renderThread();
+  });
   $("#top-actions").innerHTML = `${isCodex() ? `<button class="btn btn-sm" id="connect-agent">Reconnect</button><button class="btn btn-sm hidden" id="stop-agent">${icon("stop")} Stop agent</button>` : ""}<button class="btn btn-sm" id="finish">Finish conversation</button>`;
   $("#finish").onclick = async () => {
     if (!confirm("Finish the conversation and move on? You won't be able to send more messages.")) return;
@@ -358,11 +374,25 @@ async function pollPartner() {
 
 // ------------------------------------------------------------------ marking
 
-async function createMark({ event_id = null, anchor = "latest", quote = null, source = "overlay", popAnchor }) {
-  const m = await api("POST", `/api/sessions/${sid}/marks`, {
-    event_id, anchor, quote, source, client_t: Date.now(), draft_len: $("#input").value.length,
-  });
-  S.marks.push(m);
+function paintBookmarkStatus() {
+  const pending = bookmarkOutbox?.pending() || [];
+  let status = $("#bookmark-status");
+  if (!status && $("#fab")) {
+    status = document.createElement("span"); status.id = "bookmark-status"; status.className = "bookmark-status";
+    status.setAttribute("aria-live", "polite"); $("#fab").after(status);
+  }
+  if (!status) return;
+  status.textContent = pending.length ? bookmarkOutbox.storageAvailable
+    ? `${pending.length} saved on this device · ${pending.some(r => r.state === "failed") ? "retrying sync" : "syncing"}`
+    : "Not saved to this device. Keep this tab open while syncing." : S.marks.length ? "Bookmarks saved" : "";
+}
+
+function createMark({ event_id = null, anchor = "timestamp", quote = null, source = "overlay", popAnchor }) {
+  if (!bookmarkOutbox) return;
+  const payload = { event_id, anchor, quote, source, client_t: Date.now(), phase_at_click: S.phase,
+                    draft_len: $("#input").value.length, exposure: captureExposure(S, $("#content"), event_id) };
+  const m = bookmarkOutbox.create(payload);
+  if (!S.marks.some(x => x.id === m.id)) S.marks.push(m);
   if ($("#thread")) renderThread();
   $("#fab-count").textContent = S.marks.filter((x) => !x.deleted).length;
   const fab = $("#fab");
@@ -370,11 +400,12 @@ async function createMark({ event_id = null, anchor = "latest", quote = null, so
   const el = m.event_id && $(`.msg[data-id="${m.event_id}"]`);
   if (el) { el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 900); }
   openMarkPopover({
-    anchor: popAnchor || fab, cfg,
-    onPick: async (type) => {
+    anchor: popAnchor?.isConnected ? popAnchor : fab, cfg,
+    saveMessage: bookmarkOutbox.storageAvailable ? "Bookmarked on this device. Syncing; tagging is optional." : "Bookmark is syncing. Keep this tab open.",
+    onPick: (type) => {
       if (!type) return;
       m.quick_type = type;
-      await api("PATCH", `/api/sessions/${sid}/marks/${m.id}`, { quick_type: type });
+      bookmarkOutbox.update(m.id, { quick_type: type }, payload);
       if ($("#thread")) renderThread();
       toast(`Tagged: ${typeByKey(cfg, type).label}`);
     },
@@ -382,9 +413,12 @@ async function createMark({ event_id = null, anchor = "latest", quote = null, so
   return m;
 }
 
-$("#fab").addEventListener("click", () => createMark({ anchor: "latest" }));
+$("#fab").addEventListener("click", () => createMark({ anchor: "timestamp" }));
 document.addEventListener("keydown", (e) => {
   if (isMarkHotkey(e) && S?.phase === "chat") { e.preventDefault(); createMark({ anchor: "hotkey" }); }
+});
+window.addEventListener("beforeunload", (e) => {
+  if (bookmarkOutbox?.pending().length) { e.preventDefault(); e.returnValue = ""; }
 });
 document.addEventListener("click", (e) => {
   const b = e.target.closest(".mark-here");
@@ -426,132 +460,8 @@ function externalView() {
 
 // ------------------------------------------------------------------ review
 
-const reviewable = () => S.events.filter((e) => CHAT_ROLES.includes(e.role) || ((S.external || isCodex()) && e.role !== "thinking"));
-
-function contextHTML(m) {
-  const evs = reviewable();
-  let i = evs.findIndex((e) => e.id === m.event_id);
-  if (i < 0) return `<div class="ctx muted">This mark isn't attached to a message.</div>`;
-  const slice = evs.slice(Math.max(0, i - 2), i + 3);
-  const label = (e) => ({ user: "You", assistant: S.external ? "Agent" : partnerName(), partner: "Partner", tool_call: `Agent ran ${e.tool || "a tool"}`, tool_result: "Tool output", system: "System" }[e.role] || e.role);
-  return `<div class="ctx">${slice.map((e) => {
-    const anchor = e.id === m.event_id;
-    let t = esc(anchor ? e.text : e.text.slice(0, 420) + (e.text.length > 420 ? "…" : ""));
-    if (anchor && m.quote) { const q = esc(m.quote); t = t.includes(q) ? t.replace(q, `<mark class="q">${q}</mark>`) : t; }
-    return `<div class="ctx-ev ${anchor ? "anchor" : ""}"><div class="r">${esc(label(e))}${anchor ? " · marked" : ""}</div><div class="t">${t}</div></div>`;
-  }).join("")}</div>`;
-}
-
-function reviewCardHTML(m, n) {
-  return `<div class="review-card ${m.review ? "saved" : ""}" data-mark="${m.id}">
-    <div class="review-head"><h3 style="margin:0">Moment ${n}</h3><span class="when">${fmtTime(m.created_at)}${m.source === "candidate_confirm" ? " · added during review" : ""}</span>
-      <span class="status">${m.review ? `${icon("check")} Saved` : ""}</span></div>
-    ${contextHTML(m)}
-    <div class="row small muted" style="margin-top:-6px">Not the right message?
-      <button class="btn btn-sm btn-ghost" data-move="-1">← Earlier</button><button class="btn btn-sm btn-ghost" data-move="1">Later →</button></div>
-    ${annotationFormHTML(cfg, m, { external: S.external })}
-  </div>`;
-}
-
-function wireCard(card, m) {
-  $$("[data-move]", card).forEach((b) => (b.onclick = async () => {
-    const evs = reviewable();
-    const i = evs.findIndex((e) => e.id === m.event_id) + +b.dataset.move;
-    if (i < 0 || i >= evs.length) return;
-    m.event_id = evs[i].id;
-    await api("PATCH", `/api/sessions/${sid}/marks/${m.id}`, { event_id: m.event_id });
-    card.querySelector(".ctx").outerHTML = contextHTML(m);
-  }));
-  wireAnnotationForm(card, m, {
-    sid,
-    onSaved: () => { card.classList.add("saved"); $(".status", card).innerHTML = `${icon("check")} Saved`; },
-    onRemoved: () => card.remove(),
-  });
-}
-
 function reviewView() {
-  if (S.external || S.recording?.file) return location.replace(`/review?id=${sid}`);
-  const evIdx = Object.fromEntries(S.events.map((e, i) => [e.id, i]));
-  const marks = S.marks.filter((m) => !m.deleted).sort((a, b) => (evIdx[a.event_id] ?? 1e9) - (evIdx[b.event_id] ?? 1e9));
-  $("#content").innerHTML = `<div class="narrow">
-    <h1>Review your moments</h1>
-    <p class="instructions">${marks.length
-      ? `You marked <b>${marks.length}</b> moment${marks.length > 1 ? "s" : ""}. For each one, tell us briefly what happened. The surrounding messages are shown so you don't have to reread the whole conversation.`
-      : "You didn't mark any moments during the conversation. That's fine. Below are a few moments you can look at."}</p>
-    <div id="cards"></div>
-    <div id="cands"></div>
-    <div class="row" style="margin-top:28px"><span class="grow muted small">Unsaved changes on a card are lost when you finish.</span><button class="btn btn-primary" id="done">Finish review</button></div>
-  </div>`;
-  marks.forEach((m, i) => addCard(m, i + 1));
-  $("#done").onclick = async () => {
-    const unsaved = $$(".review-card:not(.saved)").length;
-    if (unsaved && !confirm(`${unsaved} moment${unsaved > 1 ? "s are" : " is"} not saved yet. Finish anyway?`)) return;
-    await advance();
-  };
-  renderCandidates();
-}
-
-function addCard(m, n) {
-  const wrap = document.createElement("div");
-  wrap.innerHTML = reviewCardHTML(m, n);
-  const card = wrap.firstElementChild;
-  $("#cards").appendChild(card);
-  wireCard(card, m);
-  return card;
-}
-
-function renderCandidates() {
-  const det = S.detection;
-  const box = $("#cands");
-  if (!study.show_candidates_in_review) return;
-  if (!det || det.status === "running") {
-    box.innerHTML = `<div class="section-title">${icon("sparkle")}<h2 style="margin:0">Other moments you might have noticed</h2></div><p class="muted">Looking through the conversation…</p>`;
-    clearInterval(pollTimer);
-    pollTimer = setInterval(async () => {
-      const r = await api("GET", `/api/sessions/${sid}/poll?after=${S.events.length}`).catch(() => null);
-      if (r?.detection && r.detection.status !== "running") {
-        clearInterval(pollTimer);
-        const fresh = await api("GET", `/api/sessions/${sid}`);
-        S.candidates = fresh.candidates; S.detection = fresh.detection; S.analysis = fresh.analysis;
-        renderCandidates();
-      }
-    }, 2000);
-    return;
-  }
-  const linked = new Set((S.analysis?.links || []).map((l) => l.candidate));
-  const minConf = det.method === "llm" ? 0.4 : 0;
-  const list = S.candidates.filter((c) => !linked.has(c.id) && c.confidence >= minConf && !c.participant_response)
-    .sort((a, b) => b.confidence - a.confidence).slice(0, 6);
-  if (!list.length) { box.innerHTML = ""; return; }
-  const evs = Object.fromEntries(S.events.map((e) => [e.id, e]));
-  const short = (t, n = 380) => esc(t.length > n ? t.slice(0, n) + "…" : t);
-  box.innerHTML = `<div class="section-title">${icon("sparkle")}<h2 style="margin:0">Other moments you might have noticed</h2></div>
-    <p class="instructions small">These are moments where your thinking <i>might</i> have shifted. Only say yes if it really did.</p>
-    ${list.map((c) => {
-      const tr = evs[c.trigger_event_id], up = evs[c.uptake_event_id];
-      return `<div class="cand-card" data-cand="${c.id}">
-        ${tr ? `<div class="ctx-ev anchor"><div class="r">${tr.role === "user" ? "You" : S.external ? "Agent" : partnerName()}</div><div class="t">${short(tr.text)}</div></div>` : ""}
-        ${up && up.id !== tr?.id ? `<div class="ctx-ev"><div class="r">Then you said</div><div class="t">${short(up.text, 260)}</div></div>` : ""}
-        <div class="row" style="margin-top:8px"><span class="small grow">Did this shift your thinking?</span>
-          <button class="btn btn-sm" data-ans="yes">Yes</button><button class="btn btn-sm" data-ans="no">No</button><button class="btn btn-sm btn-ghost" data-ans="unsure">Not sure</button></div>
-      </div>`;
-    }).join("")}`;
-  $$("[data-cand]", box).forEach((el) => $$("[data-ans]", el).forEach((b) => (b.onclick = async () => {
-    const c = S.candidates.find((x) => x.id === el.dataset.cand);
-    const answer = b.dataset.ans;
-    let mark_id = null;
-    if (answer === "yes") {
-      const m = await api("POST", `/api/sessions/${sid}/marks`, { event_id: c.trigger_event_id, anchor: "candidate", source: "candidate_confirm" });
-      S.marks.push(m);
-      mark_id = m.id;
-      const card = addCard(m, $$(".review-card").length + 1);
-      card.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
-    c.participant_response = { answer, mark_id };
-    await api("PATCH", `/api/sessions/${sid}/candidates/${c.id}`, { participant_response: { answer, mark_id } });
-    el.classList.add("answered");
-    $$("button", el).forEach((x) => (x.disabled = true));
-  })));
+  location.replace(`/review?id=${sid}`);
 }
 
 function doneView() {

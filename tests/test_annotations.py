@@ -77,6 +77,21 @@ class AnnotationTests(unittest.TestCase):
         self.assertTrue(snapshot["zero_flags"])
         self.assertNotIn("no_sparks", snapshot)
 
+    def test_final_save_acknowledgement_can_be_retried(self):
+        body = {"expected_review_version":0,"review":{"decision":"rejected","editor_id":"tab","editor_seq":1}}
+        annotations.patch_mark(self.s,self.m,body,set())
+        annotations.patch_mark(self.s,self.m,body,set())
+        self.assertEqual(self.m["review_version"],1)
+
+    def test_clear_passage_preserves_original_click_and_done_locks_followups(self):
+        annotations.patch_mark(self.s,self.m,{"episode":{"start_event_id":"e1","end_event_id":"e2"}},set())
+        annotations.patch_mark(self.s,self.m,{"episode":None},set())
+        self.assertIsNone(self.m["episode"])
+        self.assertIsNone(self.m["event_id"])
+        self.s["phase"] = "done"
+        with self.assertRaises(ConflictError):
+            annotations.patch_mark(self.s,self.m,{"review":{"decision":"rejected"}},set())
+
 
 if __name__ == "__main__":
     unittest.main()

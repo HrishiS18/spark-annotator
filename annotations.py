@@ -33,6 +33,8 @@ def exposure(body, valid_ids):
 
 
 def create_mark(s, body, mid):
+    if s["phase"] == "done":
+        raise ValueError("Completed sessions are locked")
     received = time.time()
     t = float(body["t"]) if "t" in body else float(body["client_t"]) / 1000 if body.get("client_t") else received
     if not math.isfinite(t) or t < 0 or t > received + 86400:
@@ -83,6 +85,10 @@ def validate_review(value, type_keys, final=False):
     if not isinstance(value, dict):
         raise ValueError("Invalid review")
     r = copy.deepcopy(value)
+    if r.get("decision") is not None and r["decision"] not in DECISIONS:
+        raise ValueError("Invalid review decision")
+    if "editor_seq" in r and (not isinstance(r["editor_seq"], int) or r["editor_seq"] < 0):
+        raise ValueError("Invalid draft sequence")
     if r.get("decision") not in DECISIONS and final:
         raise ValueError("Confirm, reject, or mark this moment as unsure first")
     if r.get("decision") == "confirmed" and final and not str(r.get("after", "")).strip():
@@ -107,11 +113,11 @@ def validate_review(value, type_keys, final=False):
 
 
 def patch_mark(s, m, body, type_keys):
-    if s.get("independent_review") and m["id"] in s["independent_review"]["mark_ids"]:
+    if s["phase"] == "done" or s.get("independent_review") and m.get("source") != "candidate_confirm":
         raise ConflictError("This independent review is already locked. Its original answers are preserved.")
     content_change = any(k in body for k in ("review", "review_draft", "episode", "event_id"))
     if content_change:
-        previous_draft = m.get("review_draft") or {}
+        previous_draft = m.get("review_draft") or m.get("review") or {}
         incoming = body.get("review_draft") or body.get("review") or {}
         if incoming.get("editor_id") and incoming.get("editor_id") == previous_draft.get("editor_id"):
             if int(incoming.get("editor_seq", 0)) <= int(previous_draft.get("editor_seq", 0)):
@@ -120,8 +126,8 @@ def patch_mark(s, m, body, type_keys):
         if expected is not None and expected != m.get("review_version", 0):
             raise ConflictError("Another tab changed this review. Your local draft has not been overwritten.")
     if "episode" in body:
-        m["episode"] = validate_episode(s, body["episode"])
-        m["event_id"] = m["episode"]["start_event_id"]
+        m["episode"] = validate_episode(s, body["episode"]) if body["episode"] else None
+        m["event_id"] = m["episode"]["start_event_id"] if m["episode"] else None
     if "event_id" in body:
         if body["event_id"] is not None and body["event_id"] not in {e["id"] for e in s["events"]}:
             raise ValueError("Unknown event anchor")

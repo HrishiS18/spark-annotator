@@ -2,6 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.error import HTTPError
@@ -144,6 +145,92 @@ class ServerTests(unittest.TestCase):
             live.result()
         self.assertEqual(codes, [201] * 20)
         self.assertEqual(len(self.store.load(self.sid)["marks"]), 20)
+
+    def test_bookmark_retries_keep_click_and_original_exposure(self):
+        self.create(runtime="demo")
+        body = {"id":"m_12345678","client_version":2,"t":100,"quick_type":"additive"}
+        _, mark = self.request(self.prefix+"/marks",body,"POST")
+        self.request(self.prefix+"/marks",dict(body,client_version=1,t=200,quick_type=None),"POST")
+        saved = self.store.load(self.sid)["marks"][0]
+        self.assertIsNone(saved["event_id"])
+        self.assertEqual(saved["t"],100)
+        self.assertEqual(saved["quick_type"],"additive")
+
+    def test_independent_pass_gates_suggestions_and_cannot_be_bypassed(self):
+        self.create(runtime="demo")
+        with server.LOCK:
+            s = self.store.load(self.sid)
+            ev = server.add_event(s,"assistant","Synthetic suggestion")
+            s["candidates"] = [{"id":"c_test","source":"judge","trigger_event_id":ev["id"],"type":"additive","rationale":"PRIVATE_MODEL_SENTINEL"}]
+            s["judge"] = {"status":"done","summary":"PRIVATE_MODEL_SENTINEL"}
+            self.store.save(s)
+        self.request(self.prefix+"/advance",{"phase":"chat"},"POST")
+        self.request(self.prefix+"/advance",{"phase":"post","text":"Final position"},"POST")
+        _, m = self.request(self.prefix+"/marks",{},"POST")
+        self.assertEqual(self.request(self.prefix+"/advance",{"phase":"review"},"POST")[0],400)
+        self.assertEqual(self.request(self.prefix+"/review/complete-independent",{},"POST")[0],400)
+        _, hidden = self.request(self.prefix)
+        self.assertEqual(hidden["candidates"],[])
+        self.assertNotIn("summary",hidden["judge"])
+        _, poll = self.request(self.prefix+"/poll")
+        self.assertNotIn("summary",poll["judge"])
+        self.assertEqual(len(self.request(self.prefix+"?view=researcher")[1]["candidates"]),1)
+        self.request(self.prefix+"/marks/"+m["id"],{"review":{"decision":"unsure"}},"PATCH")
+        self.assertEqual(self.request(self.prefix+"/review/complete-independent",{},"POST")[0],200)
+        self.assertEqual(self.request(self.prefix+"/marks/"+m["id"],{"review":{"decision":"rejected"}},"PATCH")[0],409)
+        self.assertEqual(self.request(self.prefix+"/advance",{"phase":"review"},"POST")[0],200)
+        self.assertEqual(self.request(self.prefix+"/candidates/c_test",{"participant_response":{"answer":"yes"}},"PATCH")[0],400)
+
+    def test_judge_explicit_run_only_and_no_regex_endpoints(self):
+        self.create(runtime="demo")
+        with patch.object(server.judge,"status",return_value={"live":True,"model":"test","provider":"codex"}):
+            self.assertEqual(self.request(self.prefix+"/judge",{},"POST")[0],400)
+            self.assertEqual(self.request(self.prefix+"/judge",{"hints":True},"POST")[0],400)
+        self.assertEqual(self.request(self.prefix+"/detect",{},"POST")[0],404)
+        with server.LOCK:
+            s = self.store.load(self.sid); server.add_event(s,"assistant","Synthetic."); self.store.save(s)
+        self.request(self.prefix+"/advance",{"phase":"chat"},"POST")
+        self.assertIsNone(self.store.load(self.sid).get("judge"))
+        started, release = threading.Event(), threading.Event()
+        def infer(s):
+            started.set(); release.wait(3); return [], {"summary":"No candidates","version":"test"}
+        with patch.object(server.judge,"status",return_value={"live":True,"model":"test","provider":"codex"}), patch.object(server.judge,"run",side_effect=infer):
+            self.assertEqual(self.request(self.prefix+"/judge",{},"POST")[0],202)
+            self.assertTrue(started.wait(1))
+            self.assertEqual(self.request(self.prefix+"/judge",{},"POST")[0],400)
+            release.set()
+            for _ in range(50):
+                if self.store.load(self.sid).get("judge",{}).get("status") == "done": break
+                time.sleep(.02)
+        saved = self.store.load(self.sid)
+        self.assertEqual(saved["judge"]["status"],"done")
+        self.assertEqual(saved["candidates"],[])
+        self.assertEqual(saved["analysis_runs"][0]["source"],"judge")
+
+    def test_failed_judge_run_preserves_history_without_old_active_predictions(self):
+        self.create(runtime="demo")
+        with server.LOCK:
+            s = self.store.load(self.sid); ev = server.add_event(s,"assistant","Synthetic.")
+            server.advance(s,"chat")
+            server._merge_candidates(s,[{"trigger_event_id":ev["id"],"type":"additive"}],"judge",{"status":"done"})
+            self.store.save(s)
+        with patch.object(server.judge,"run",side_effect=server.llm.LLMError("Unavailable")):
+            server.run_judge(self.sid)
+        saved = self.store.load(self.sid)
+        self.assertEqual(saved["judge"]["status"],"error")
+        self.assertEqual(saved["candidates"],[])
+        self.assertEqual(len(saved["analysis_runs"]),2)
+        self.assertEqual(saved["analysis_runs"][0]["metadata"]["status"],"done")
+        self.assertEqual(saved["analysis_runs"][1]["metadata"]["status"],"error")
+
+    def test_startup_judge_recovery_does_not_start_inference(self):
+        self.create(runtime="demo")
+        with server.LOCK:
+            s = self.store.load(self.sid); s["judge"] = {"status":"running"}; self.store.save(s)
+        with patch.object(server.judge,"run") as inference:
+            server.recover_judges()
+        inference.assert_not_called()
+        self.assertEqual(self.store.load(self.sid)["judge"]["status"],"error")
 
 
 if __name__ == "__main__":

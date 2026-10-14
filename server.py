@@ -23,12 +23,12 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
-import detector
 import judge
 import llm
 import parsers
 import transcript
 import storage
+import annotations
 from codex_runtime import RuntimeManager, RuntimeUnavailable
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -49,7 +49,6 @@ def _load_config(name):
 TAXONOMY = _load_config("taxonomy.json")
 PERSONAS = {p["key"]: p for p in _load_config("personas.json")["personas"]}
 STUDIES = {s["key"]: s for s in _load_config("studies.json")["studies"]}
-CODEBOOK = _load_config("spark_codebook.json")
 LOCK = threading.RLock()
 _STORE = None
 _RUNTIME = None
@@ -158,6 +157,14 @@ def create_session(body):
 def advance(s, phase, text=None):
     if phase != s["phase"]:
         raise ValueError(f"session is in phase {s['phase']}, not {phase}")
+    if phase == "done":
+        raise ValueError("Session is already complete")
+    if phase == "review":
+        if not s.get("independent_review"):
+            raise ValueError("Complete independent review first")
+        if any(m.get("source") == "candidate_confirm" and not m.get("deleted") and
+               (m.get("review_dirty") or (m.get("review") or {}).get("status") != "submitted") for m in s["marks"]):
+            raise ValueError("Confirm the suggested moments you added before finishing")
     iso, _ = now()
     if phase in ("pre", "post"):
         s["writing"][phase] = {"text": text or "", "submitted_at": iso}
@@ -229,44 +236,23 @@ def room_peers(s):
             and o.get("condition") == "human"]
 
 
-def context_for(s):
-    return {"task": s["prompt"]["text"], "pre": (s["writing"].get("pre") or {}).get("text", ""),
-            "partner_kind": "human" if s["condition"] == "human" else "ai"}
-
-
-def run_detection(sid):
-    with LOCK:
-        s = load(sid)
-        s["detection"] = {"status": "running", "started_at": now()[0]}
-        save(s)
-        events, ctx = [e for e in s["events"] if not e.get("meta", {}).get("superseded")], context_for(s)
-    try:
-        cands, meta, turns = detector.detect(events, ctx)
-        status = "done"
-    except Exception as exc:  # keep the study running whatever happens
-        cands, meta, turns, status = [], {"error": repr(exc)}, [], "error"
-    with LOCK:
-        s = load(sid)
-        _merge_candidates(s, cands, "codebook", meta)
-        s["parse_turns"] = turns
-        s["detection"] = dict(meta, status=status, finished_at=now()[0], n=len(cands))
-        save(s)
-
-
 def _merge_candidates(s, cands, source, metadata=None):
     """Every analysis run has separate predictions; historical answers stay intact."""
-    configuration = CODEBOOK if source == "codebook" else {
-        "model": llm.JUDGE_MODEL, "effort": llm.JUDGE_EFFORT, "hints": (s.get("judge") or {}).get("hints", False)}
+    configuration = {**judge.status(), "system_prompt": judge.SYSTEM, "schema": judge.SCHEMA}
     return storage.record_analysis_run(s, source, cands, metadata or {}, configuration)
 
 
-def run_judge(sid, hints=False):
+def run_judge(sid, reserved=False):
     with LOCK:
         s = load(sid)
-        s["judge"] = {"status": "running", "started_at": now()[0], "hints": hints, **judge.estimate(s)}
+        if s["phase"] in ("pre", "chat"):
+            raise ValueError("Finish the conversation before running the judge")
+        if not reserved and (s.get("judge") or {}).get("status") == "running":
+            raise ValueError("The judge is already running")
+        s["judge"] = {"status": "running", "started_at": now()[0], **judge.estimate(s)}
         save(s)
     try:
-        cands, meta = judge.run(s, hints=hints)
+        cands, meta = judge.run(s)
         status, err = "done", None
     except llm.LLMError as exc:
         cands, meta, status, err = None, {}, "error", str(exc)
@@ -274,68 +260,63 @@ def run_judge(sid, hints=False):
         cands, meta, status, err = None, {}, "error", repr(exc)
     with LOCK:
         s = load(sid)
-        if cands is not None:
-            _merge_candidates(s, cands, "judge", meta)
+        run_metadata = {**meta, "status": status, "error": err, "finished_at": now()[0]}
+        # Failed attempts are runs too. Do not present older predictions as if
+        # they came from the failed run; previous responses remain archived.
+        _merge_candidates(s, cands or [], "judge", run_metadata)
         s["judge"] = dict(s.get("judge") or {}, **meta, status=status, error=err, finished_at=now()[0],
                           n=len(cands) if cands is not None else None)
         save(s)
-
-
-def detect_async(sid):
-    threading.Thread(target=run_detection, args=(sid,), daemon=True).start()
 
 
 def event_index(s):
     return {e["id"]: i for i, e in enumerate(s["events"])}
 
 
-def _near(idx, a_ids, b_ids, tol):
-    ai = [idx.get(x) for x in a_ids if x]
-    bi = [idx.get(x) for x in b_ids if x]
-    return any(x is not None and y is not None and abs(x - y) <= tol for x in ai for y in bi)
+def recover_judges():
+    """Single-server startup recovery; never restart inference automatically."""
+    with LOCK:
+        for s in all_sessions():
+            if (s.get("judge") or {}).get("status") != "running":
+                continue
+            error = "Server restarted during judging. Run again explicitly."
+            meta = {**s["judge"], "status": "error", "error": error, "finished_at": now()[0]}
+            _merge_candidates(s, [], "judge", meta)
+            s["judge"] = {**meta, "n": None}
+            save(s)
 
-
-def analysis(s, tol=1):
-    """Triangulate participant flags, codebook candidates and LLM-judge candidates
-    (and before/after attributions). Two items agree when their trigger/uptake events are
-    within `tol` events of each other."""
+def analysis(s, tol=None):
+    """Descriptive passage overlap, not accuracy or validation of perceived value."""
     idx = event_index(s)
     marks = [m for m in s["marks"] if not m.get("deleted")]
+    candidates = [c for c in s["candidates"] if c.get("source") == "judge"]
     links = []
+    def span(start, end):
+        a, b = idx.get(start), idx.get(end or start)
+        return (a,b) if a is not None and b is not None and a <= b else None
     for m in marks:
-        for c in s["candidates"]:
-            if m.get("event_id") and _near(idx, [m["event_id"]], [c["trigger_event_id"], c.get("uptake_event_id")], tol):
-                links.append({"mark": m["id"], "candidate": c["id"], "source": c.get("source", "codebook")})
-    by_src = {src: [c for c in s["candidates"] if c.get("source", "codebook") == src] for src in ("codebook", "judge")}
-    pair_any = pair_type = 0
-    for j in by_src["judge"]:
-        near = [c for c in by_src["codebook"] if _near(idx, [j["trigger_event_id"], j.get("uptake_event_id")],
-                                                       [c["trigger_event_id"], c.get("uptake_event_id")], tol)]
-        pair_any += bool(near)
-        pair_type += any(c["type"] == j["type"] for c in near)
-    linked_marks = lambda src: len({l["mark"] for l in links if l["source"] == src})  # noqa: E731
-    traced = set()
-    for u in (s.get("trace") or {}).get("units", []):
-        traced.update(u.get("source_event_ids", []))
+        episode = m.get("episode") or {}
+        a = span(episode.get("start_event_id",m.get("event_id")), episode.get("end_event_id"))
+        for c in candidates:
+            b = span(c.get("start_event_id",c["trigger_event_id"]), c.get("end_event_id") or c.get("uptake_event_id"))
+            if a and b and max(a[0],b[0]) <= min(a[1],b[1]):
+                links.append({"mark":m["id"],"candidate":c["id"],"source":"judge","relation":"passage_overlap"})
     types = [t["key"] for t in TAXONOMY["types"]]
-    by_type = {t: {"marks": 0, "candidates": 0, "codebook": 0, "judge": 0} for t in types}
+    by_type = {t: {"marks": 0, "judge": 0} for t in types}
     for m in marks:
         t = ((m.get("review") or {}).get("primary")) or m.get("quick_type")
         if t in by_type:
             by_type[t]["marks"] += 1
-    for c in s["candidates"]:
-        if c["mechanism"] == "spark" and c["type"] in by_type:
-            by_type[c["type"]]["candidates"] += 1
-            by_type[c["type"]][c.get("source", "codebook")] += 1
+    for c in candidates:
+        if c.get("type") in by_type:
+            by_type[c["type"]]["judge"] += 1
     return {
-        "marks": len(marks), "candidates": len(s["candidates"]),
-        "codebook": len(by_src["codebook"]), "judge": len(by_src["judge"]),
+        "marks": len(marks), "candidates": len(candidates), "judge": len(candidates),
         "matched_marks": len({l["mark"] for l in links}),
         "matched_candidates": len({l["candidate"] for l in links}),
-        "marks_found_by": {"codebook": linked_marks("codebook"), "judge": linked_marks("judge")},
-        "judge_vs_codebook": {"judge_with_codebook_nearby": pair_any, "same_type": pair_type},
-        "links": links, "traced_events": sorted(traced, key=lambda e: idx.get(e, 0)), "by_type": by_type,
-        "tolerance_events": tol,
+        "independent_marks": sum(m.get("source") != "candidate_confirm" for m in marks),
+        "suggested_marks": sum(m.get("source") == "candidate_confirm" for m in marks),
+        "links": links, "by_type": by_type, "relation": "passage_overlap_not_accuracy",
     }
 
 
@@ -347,8 +328,8 @@ def summary_row(s):
         "condition": s["condition"], "room": s.get("room"), "phase": s["phase"],
         "events": len(s["events"]), "marks": len(marks),
         "reviewed": sum(1 for m in marks if m.get("review")),
-        "candidates": len(s["candidates"]),
-        "detection": (s.get("detection") or {}).get("method"),
+        "candidates": sum(c.get("source") == "judge" for c in s["candidates"]),
+        "judge_status": (s.get("judge") or {}).get("status", "not_run"),
         "recording": round((s.get("recording") or {}).get("duration") or 0) if (s.get("recording") or {}).get("file") else None,
     }
 
@@ -366,19 +347,6 @@ def _offset(s, item):
     return round(t - rec["started_t"], 1) if t is not None and rec.get("started_t") else None
 
 
-def parse_csv():
-    """Per-turn features from the codebook parser (word-level novelty, signals, fired rules)."""
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["session_id", "participant_id", "event_id", "role", "video_offset_s", "words", "signals",
-                "new_terms", "adopted_terms", "rules_fired", "copy_overlap", "deferent"])
-    for s in all_sessions():
-        ev = {e["id"]: e for e in s["events"]}
-        for r in s.get("parse_turns") or []:
-            w.writerow([s["id"], s["participant_id"], r["event_id"], r["role"], _offset(s, ev.get(r["event_id"])),
-                        r["words"], "|".join(r["signals"]), "|".join(r["new_terms"][:40]), "|".join(r["adopted_terms"]),
-                        "|".join(r["rules"]), r.get("copy_overlap"), r.get("deferent")])
-    return buf.getvalue()
 
 
 def marks_csv():
@@ -387,7 +355,8 @@ def marks_csv():
     w.writerow(["session_id", "participant_id", "study", "prompt_id", "persona", "condition", "mark_id", "created_at",
                 "video_offset_s", "source", "anchor", "event_id", "event_role", "event_text", "quote", "quick_type", "review_types",
                 "review_primary", "uptake", "latency", "intensity", "before", "after", "matched_candidates",
-                "researcher_label"])
+                "researcher_label", "decision", "review_status", "perceived_value", "reported_outcome",
+                "passage_start", "passage_end", "original_click_t", "reference_t", "original_event_id"])
     for s in all_sessions():
         ev = {e["id"]: e for e in s["events"]}
         an = analysis(s)
@@ -402,7 +371,9 @@ def marks_csv():
                         "|".join(r.get("types", [])), r.get("primary"), r.get("uptake"), r.get("latency"),
                         r.get("intensity"), _quick(r.get("before"), 1000), _quick(r.get("after"), 1000),
                         "|".join(l["candidate"] for l in an["links"] if l["mark"] == m["id"]),
-                        (s["codes"].get(f"mark:{m['id']}") or {}).get("label")])
+                        (s["codes"].get(f"mark:{m['id']}") or {}).get("label"), r.get("decision"), r.get("status"),
+                        r.get("perceived_value"), r.get("outcome"), (m.get("episode") or {}).get("start_event_id"),
+                        (m.get("episode") or {}).get("end_event_id"), m.get("t"), m.get("reference_t"), m.get("original_event_id")])
     return buf.getvalue()
 
 
@@ -410,23 +381,26 @@ def candidates_csv():
     buf = io.StringIO()
     w = csv.writer(buf)
     w.writerow(["session_id", "participant_id", "study", "prompt_id", "persona", "condition", "candidate_id",
-                "source", "trigger_event_id", "uptake_event_id", "type", "secondary_type", "mechanism", "score", "rules",
+                "source", "trigger_event_id", "uptake_event_id", "type", "secondary_type", "insight_evidence", "strength", "persuasion",
                 "video_offset_s",
                 "trigger_quote", "uptake_quote", "rationale", "participant_response", "matched_marks",
-                "researcher_label"])
+                "researcher_label", "copying", "uptake", "passage_start", "passage_end"])
     for s in all_sessions():
         an = analysis(s)
         ev = {e["id"]: e for e in s["events"]}
         method = (s.get("detection") or {}).get("method")
         for c in s["candidates"]:
+            if c.get("source") != "judge":
+                continue  # historical rule outputs remain only in full JSON/history
             pr = c.get("participant_response") or {}
             w.writerow([s["id"], s["participant_id"], s["study"], s["prompt"]["id"], s["persona"], s["condition"],
                         c["id"], c.get("source", method), c["trigger_event_id"], c.get("uptake_event_id"), c["type"],
-                        c.get("secondary_type"), c["mechanism"], c.get("score") if c.get("score") is not None else c.get("confidence"),
-                        "|".join(r["rule"] for r in c.get("rules", [])), _offset(s, ev.get(c["trigger_event_id"])), _quick(c.get("trigger_quote")),
+                        c.get("secondary_type"), c.get("insight_evidence"), c.get("strength"), c.get("persuasion"),
+                        _offset(s, ev.get(c["trigger_event_id"])), _quick(c.get("trigger_quote")),
                         _quick(c.get("uptake_quote")), _quick(c.get("rationale"), 600), pr.get("answer"),
                         "|".join(l["mark"] for l in an["links"] if l["candidate"] == c["id"]),
-                        (s["codes"].get(f"candidate:{c['id']}") or {}).get("label")])
+                        (s["codes"].get(f"candidate:{c['id']}") or {}).get("label"), c.get("copying"), c.get("uptake"),
+                        c.get("start_event_id"), c.get("end_event_id")])
     return buf.getvalue()
 
 
@@ -657,8 +631,7 @@ class Handler(BaseHTTPRequestHandler):
                 "personas": [{"key": p["key"], "label": p["label"]} for p in PERSONAS.values()],
                 "llm": llm.status(),
                 "runtime": get_runtime().status(),
-                "codebook": {"version": CODEBOOK["version"], "rules": len(CODEBOOK["rules"])},
-                "judge": {**llm.status(), "model": llm.JUDGE_MODEL, "effort": llm.JUDGE_EFFORT},
+                "judge": judge.status(),
             })
         if api == ["sessions"]:
             if method == "GET":
@@ -684,8 +657,6 @@ class Handler(BaseHTTPRequestHandler):
         if api[:1] == ["export"] and method == "GET":
             if api[1:] == ["marks.csv"]:
                 return self._send(200, marks_csv(), "text/csv", {"Content-Disposition": "attachment; filename=marks.csv"})
-            if api[1:] == ["parse.csv"]:
-                return self._send(200, parse_csv(), "text/csv", {"Content-Disposition": "attachment; filename=parse.csv"})
             if api[1:] == ["candidates.csv"]:
                 return self._send(200, candidates_csv(), "text/csv", {"Content-Disposition": "attachment; filename=candidates.csv"})
 
@@ -726,12 +697,20 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and not rest:
             s = load(sid)
             s["analysis"] = analysis(s)
+            if (query.get("view") or [""])[0] != "researcher" and not s.get("independent_review"):
+                s["candidates"] = []
+                s["judge"] = {"status": (s.get("judge") or {}).get("status", "not_run")}
+                s["analysis"] = {"marks": len(s["marks"]), "links": []}
+                s["analysis_runs"] = []
+            s.pop("parse_turns", None)
+            s.pop("detection", None)
+            s.pop("trace", None)
             return self._send(200, s)
         if method == "GET" and rest == ["poll"]:
             s = load(sid)
             after = int((query.get("after") or ["0"])[0])
             return self._send(200, {"phase": s["phase"], "events": s["events"][after:],
-                                    "detection": s.get("detection"), "judge": s.get("judge"), "marks": len(s["marks"])})
+                                    "judge": {"status": (s.get("judge") or {}).get("status", "not_run")}, "marks": len(s["marks"])})
         if method == "GET" and rest == ["recording"]:
             return self._serve_recording(load(sid))
         if method == "POST" and rest == ["recording"]:
@@ -739,7 +718,7 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and rest == ["recording", "chunk"]:
             return self._receive_chunk(sid, query)
         if method == "GET" and rest == ["judge", "estimate"]:
-            return self._send(200, {**judge.estimate(load(sid)), "available": llm.status()})
+            return self._send(200, {**judge.estimate(load(sid)), "available": judge.status()})
         if method == "GET" and rest in (["transcript.md"], ["transcript.txt"]):
             s = load(sid)
             body = transcript.render_markdown(s, TAXONOMY) if rest[0].endswith(".md") else transcript.render_for_judge(s)
@@ -792,10 +771,6 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Stop the agent or wait for it to finish before leaving the conversation")
                 nxt = advance(s, body.get("phase"), body.get("text"))
                 save(s)
-            if nxt == "review":
-                cfg = STUDIES[s["study"]]
-                if cfg.get("show_candidates_in_review") and s["events"]:
-                    detect_async(sid)
             return self._send(200, {"phase": nxt})
 
         if method == "POST" and rest == ["message"]:
@@ -845,7 +820,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, {"ok": True})
 
         if method == "POST" and rest == ["marks"]:
-            iso, t = now()
             with LOCK:
                 s = load(sid)
                 cid = body.get("id")
@@ -853,25 +827,18 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("bad mark id")
                 existing = next((m for m in s["marks"] if cid and m["id"] == cid), None)
                 if existing:  # idempotent re-sync from the overlay
-                    for key in ("quick_type", "deleted"):
-                        if key in body:
-                            existing[key] = body[key]
+                    if int(body.get("client_version", 1)) > existing.get("client_version", 0):
+                        if s["phase"] == "done" or s.get("independent_review"):
+                            raise ValueError("Review is locked; bookmark changes cannot overwrite it")
+                        for key in ("quick_type", "deleted"):
+                            if key in body:
+                                existing[key] = body[key]
+                        existing["client_version"] = int(body.get("client_version", 1))
                     save(s)
                     return self._send(200, existing)
-                ids = {e["id"] for e in s["events"]}
-                eid = body.get("event_id") if body.get("event_id") in ids else None
-                if eid is None and s["events"] and not s["external"]:
-                    eid = next((e["id"] for e in reversed(s["events"]) if e["role"] in ("assistant", "partner")),
-                               s["events"][-1]["id"])
-                ct = body.get("client_t")
-                mt = float(body["t"]) if body.get("t") else (float(ct) / 1000 if ct else t)
-                m = {"id": cid or new_id("m"), "created_at": parsers.parse_ts(mt)[0] or iso, "t": mt,
-                     "phase": s["phase"], "source": body.get("source", "overlay"),
-                     "anchor": body.get("anchor", "latest"), "event_id": eid,
-                     "quote": (body.get("quote") or "")[:2000] or None,
-                     "quick_type": body.get("quick_type"), "draft_len": body.get("draft_len"),
-                     "review": None}
-                s["marks"].append(m)
+                if s.get("independent_review") and body.get("source") != "candidate_confirm":
+                    raise ValueError("Independent review is locked; new moments must be recorded as follow-up suggestions")
+                m = annotations.create_mark(s, body, cid or new_id("m"))
                 save(s)
             return self._send(201, m)
 
@@ -879,53 +846,47 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 s = load(sid)
                 m = next(m for m in s["marks"] if m["id"] == rest[1])
-                if body.get("event_id") is not None and body["event_id"] not in {e["id"] for e in s["events"]}:
-                    raise ValueError("Unknown event anchor")
-                for key in ("quick_type", "event_id", "deleted"):
-                    if key in body:
-                        m[key] = body[key]
-                if "review" in body:
-                    m["review"] = dict(body["review"], reviewed_at=now()[0])
+                annotations.patch_mark(s, m, body, {t["key"] for t in TAXONOMY["types"]})
                 save(s)
             return self._send(200, m)
+
+        if method == "POST" and rest == ["review", "complete-independent"]:
+            with LOCK:
+                s = load(sid)
+                snapshot = annotations.complete_independent_review(s)
+                save(s)
+            return self._send(200, snapshot)
 
         if method == "PATCH" and len(rest) == 2 and rest[0] == "candidates":
             with LOCK:
                 s = load(sid)
+                if not s.get("independent_review"):
+                    raise ValueError("Complete independent review before responding to suggestions")
+                if s["phase"] != "review":
+                    raise ValueError("Suggestion responses are locked after review")
                 c = next(c for c in s["candidates"] if c["id"] == rest[1])
                 if "participant_response" in body:
                     c["participant_response"] = dict(body["participant_response"], at=now()[0])
                 save(s)
             return self._send(200, c)
 
-        if method == "POST" and rest == ["detect"]:
-            run_detection(sid)
-            s = load(sid)
-            return self._send(200, {"detection": s["detection"], "candidates": s["candidates"]})
-
         if method == "POST" and rest == ["judge"]:
-            s = load(sid)
-            if not llm.status()["live"]:
-                raise ValueError(f"LLM judge unavailable: {llm.status()['reason']}")
-            if not s["events"]:
-                raise ValueError("No transcript to judge yet")
-            if (s.get("judge") or {}).get("status") == "running":
-                raise ValueError("The judge is already running for this session")
-            threading.Thread(target=run_judge, args=(sid, bool(body.get("hints"))), daemon=True).start()
-            return self._send(202, {"status": "running", **judge.estimate(s)})
-
-        if method == "POST" and rest == ["trace"]:
-            s = load(sid)
-            pre = (s["writing"].get("pre") or {}).get("text", "")
-            post = (s["writing"].get("post") or {}).get("text", "")
-            if not post:
-                raise ValueError("no final write-up to trace")
-            out = detector.trace_diff(pre, post, s["events"], context_for(s))
+            if body:
+                raise ValueError("Judge takes no participant hints or supplied predictions")
+            if not judge.status()["live"]:
+                raise ValueError(f"LLM judge unavailable: {judge.status()['reason']}")
             with LOCK:
                 s = load(sid)
-                s["trace"] = dict(out, at=now()[0])
+                if s["phase"] in ("pre", "chat"):
+                    raise ValueError("Finish the conversation before running the judge")
+                if not s["events"]:
+                    raise ValueError("No transcript to judge yet")
+                if (s.get("judge") or {}).get("status") == "running":
+                    raise ValueError("The judge is already running for this session")
+                s["judge"] = {"status": "running", "started_at": now()[0], **judge.estimate(s)}
                 save(s)
-            return self._send(200, s["trace"])
+            threading.Thread(target=run_judge, args=(sid, True), daemon=True).start()
+            return self._send(202, {"status": "running", **judge.estimate(s)})
 
         if method == "POST" and rest == ["code"]:
             key = f"{body['kind']}:{body['target']}"
@@ -960,8 +921,6 @@ class Handler(BaseHTTPRequestHandler):
                 s["imports"].append({"at": now()[0], "file": name, "members": members, "meta": meta,
                                      "events": len(imported)})
                 save(s)
-            if s["phase"] in ("review", "done") and events:
-                detect_async(sid)
             return self._send(200, {"events": len(events), "meta": meta,
                                     "aligned": sum(1 for m in s["marks"] if m.get("event_id"))})
 
@@ -976,6 +935,7 @@ def main():
     get_store()
     print(f"Spark Annotator on http://{a.host}:{a.port} · SQLite storage · default runtime: Codex")
     httpd = StudyHTTPServer((a.host, a.port), Handler)
+    recover_judges()
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

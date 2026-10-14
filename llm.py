@@ -1,9 +1,9 @@
-"""Thin wrapper around the Anthropic SDK with an offline demo fallback.
+"""Optional Anthropic text-only chat/judge adapter and explicitly selected demo.
 
 Live mode needs `pip install anthropic` plus credentials the SDK can resolve
 (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an `ant auth login` profile).
-Without them the platform still runs: the in-browser chat partner is scripted and
-the LLM judge (judge.py) is unavailable; the codebook parser needs no API at all.
+This adapter is separate from the default Codex agent and restricted Codex judge.
+Missing credentials raise errors; scripted responses require explicit demo mode.
 """
 
 import json
@@ -12,12 +12,8 @@ import random
 
 MODEL = os.environ.get("SPARK_MODEL", "claude-opus-5-5")
 CHAT_EFFORT = os.environ.get("SPARK_CHAT_EFFORT", "medium")
-DETECT_EFFORT = os.environ.get("SPARK_DETECT_EFFORT", "high")
 JUDGE_MODEL = os.environ.get("SPARK_JUDGE_MODEL", MODEL)
 JUDGE_EFFORT = os.environ.get("SPARK_JUDGE_EFFORT", "high")
-# USD per million tokens (input, output) for cost estimates shown to researchers.
-PRICES = {"claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.10, 0.50),
-          "claude-fable-5-1": (10.0, 50.0)}
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 try:
@@ -106,8 +102,8 @@ def judge_call(system, prompt, schema, model=None, effort=None):
         raise LLMError(f"LLM unavailable: {_client_error}")
     model = model or JUDGE_MODEL
     with _api_errors():
-        with c.beta.messages.stream(
-            model=model, max_tokens=64000, betas=[FALLBACK_BETA], fallbacks="default", system=system,
+        with c.messages.stream(
+            model=model, max_tokens=64000, system=system,
             messages=[{"role": "user", "content": prompt}],
             output_config={"effort": effort or JUDGE_EFFORT, "format": {"type": "json_schema", "schema": schema}},
         ) as stream:
@@ -118,8 +114,7 @@ def judge_call(system, prompt, schema, model=None, effort=None):
         raise LLMError("The judge's answer was cut off (max_tokens)")
     u = resp.usage
     usage = {"model": resp.model, "input_tokens": u.input_tokens, "output_tokens": u.output_tokens}
-    p_in, p_out = PRICES.get(model, (0, 0))
-    usage["cost_usd"] = round(u.input_tokens / 1e6 * p_in + u.output_tokens / 1e6 * p_out, 4)
+    usage["cost_usd"] = None
     return json.loads(_text(resp)), usage
 
 
@@ -134,14 +129,6 @@ def chat(system, messages):
     return _text(resp)
 
 
-def json_call(system, prompt, schema):
-    resp = _create(max_tokens=16000, system=system,
-                   messages=[{"role": "user", "content": prompt}],
-                   output_config={"effort": DETECT_EFFORT,
-                                  "format": {"type": "json_schema", "schema": schema}})
-    if resp.stop_reason == "max_tokens":
-        raise LLMError("Detector output was truncated (max_tokens)")
-    return json.loads(_text(resp))
 
 
 # --------------------------------------------------------------------------- demo partner

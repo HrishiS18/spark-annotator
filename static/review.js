@@ -1,325 +1,146 @@
-// Post-session review: the screen recording with the participant's flags on a timeline,
-// a transcript synced to the video, and the annotation form for each flag.
-import {
-  api, icon, esc, $, $$, config, TYPE_COLOR, typeByKey, toast, fmtClock, annotationFormHTML, wireAnnotationForm,
-} from "/static/common.js";
+// One transcript-first review for integrated chat and external recordings.
+import { api, icon, esc, $, $$, config, TYPE_COLOR, toast, fmtClock } from "/static/common.js";
+import { annotationFormHTML, wireAnnotationForm, flushReviewDrafts } from "/static/review_forms.js";
+import { BookmarkOutbox } from "/static/bookmarks.js";
 
-const params = new URLSearchParams(location.search);
-const sid = params.get("id");
-const researcher = params.get("mode") === "researcher";
-const LEAD = 20; // seconds of lead-in when jumping to a flag
-let cfg, S, video = null, t0 = 0, duration = 0, showParser = researcher, openId = null;
-
-const off = (t) => (t == null ? null : t - t0);
-const live = (m) => !m.deleted;
-const flags = () => S.marks.filter(live).sort((a, b) => a.t - b.t);
-const evById = (id) => S.events.find((e) => e.id === id);
-const typeOf = (m) => m.review?.primary || m.quick_type || null;
-const tLabel = (k) => typeByKey(cfg, k)?.label || (k === "other" ? "Something else" : null);
-const agentName = () => (S.external ? "Agent" : S.condition === "human" ? "Partner" : "AI");
+const params = new URLSearchParams(location.search), sid = params.get('id');
+const researcher = params.get('mode') === 'researcher';
+let cfg, S, video = null, t0 = 0, duration = 60, openId = null, selectedStart = null, outbox;
+const forms = new Map();
+const eventById = id => S.events.find(e => e.id === id);
+const point = m => m.reference_t ?? m.t;
+const offset = t => t == null ? 0 : t - t0;
+const independentDone = () => !!S.independent_review;
+const liveMarks = () => S.marks.filter(m => !m.deleted);
+const label = e => ({ user: 'You', assistant: S.runtime?.kind === 'codex' ? 'Codex' : 'Agent', partner: 'Partner', tool_call: 'Tool call', tool_result: 'Tool output' }[e.role] || e.role);
 
 async function load() {
-  S = await api("GET", `/api/sessions/${sid}`);
-  const rec = S.recording || {};
-  t0 = rec.started_t ?? S.events.find((e) => e.t)?.t ?? S.marks[0]?.t ?? 0;
-  duration = rec.duration || Math.max(60, ...S.marks.map((m) => off(m.t) + 30), ...S.events.filter((e) => e.t).map((e) => off(e.t) + 30));
+  S = await api('GET', `/api/sessions/${sid}${researcher ? '?view=researcher' : ''}`);
+  t0 = S.recording?.started_t ?? S.events.find(e => e.t)?.t ?? S.marks[0]?.t ?? 0;
+  duration = S.recording?.duration || Math.max(60, ...S.events.filter(e => e.t).map(e => offset(e.t) + 20));
 }
 
-// ------------------------------------------------------------------ layout
-
-function renderTop() {
-  $("#brand").innerHTML = `${icon("bulb")}<span>Spark review</span>`;
-  $("#title").textContent = `${S.participant_id} · ${S.prompt.title}`;
-  const rec = S.recording;
-  $("#meta").textContent = rec?.file ? `recording ${fmtClock(rec.duration)}` : rec?.status === "recording" ? "recording in progress" : "no recording";
-  $("#actions").innerHTML = researcher
-    ? `<button class="btn btn-sm" id="rerun">${icon("sparkle")}Re-run parser</button><a class="btn btn-sm" href="/api/sessions/${sid}/export.json">Export JSON</a><a class="btn btn-sm btn-ghost" href="/researcher#${sid}">Dashboard</a>`
-    : S.phase === "review" ? `<button class="btn btn-primary btn-sm" id="finish">Finish review</button>` : "";
-  $("#rerun") && ($("#rerun").onclick = async () => { await api("POST", `/api/sessions/${sid}/detect`); await load(); renderAll(); toast("Parser re-run"); });
-  $("#finish") && ($("#finish").onclick = async () => {
-    const todo = flags().filter((m) => !m.review).length;
-    if (todo && !confirm(`${todo} flag${todo > 1 ? "s are" : " is"} not annotated yet. Finish anyway?`)) return;
-    await api("POST", `/api/sessions/${sid}/advance`, { phase: "review" });
-    await load(); renderAll();
-    $("#intro").innerHTML = `<div class="banner" style="margin:0 0 14px">Thank you, your review is complete. Please let the researcher know.</div>`;
-  });
+function renderHeader() {
+  $('#brand').innerHTML = `${icon('bulb')}<span>Spark review</span>`;
+  $('#title').textContent = S.prompt.title;
+  $('#meta').textContent = researcher ? 'Researcher view' : independentDone() ? 'Independent review locked' : 'Independent review · model suggestions hidden';
+  $('#actions').innerHTML = researcher
+    ? `<button class="btn btn-sm" id="run-judge" ${cfg.judge.live ? '' : 'disabled'}>Run LLM judge</button><a class="btn btn-sm" href="/api/sessions/${sid}/export.json">Export</a><a class="btn btn-sm" href="/researcher#${sid}">Dashboard</a>`
+    : S.phase === 'review' ? `<button class="btn btn-primary btn-sm" id="finish">${independentDone() ? 'Finish session' : 'Finish independent review'}</button>` : '';
+  if ($('#finish')) $('#finish').onclick = finish;
+  if ($('#run-judge')) $('#run-judge').onclick = async () => {
+    if (!confirm('Send this session’s transcript and baseline to the LLM judge? Participant bookmarks and reviews are excluded.')) return;
+    try { await api('POST', `/api/sessions/${sid}/judge`, {}); toast('LLM judge started'); await load(); renderSuggestions(); }
+    catch (error) { toast(error.message); }
+  };
 }
 
 function renderPlayer() {
-  const rec = S.recording;
-  if (rec?.file) {
-    $("#player").innerHTML = `<video id="video" controls preload="metadata" src="/api/sessions/${sid}/recording"></video>`;
-    video = $("#video");
-    video.addEventListener("loadedmetadata", () => { if (isFinite(video.duration)) { duration = video.duration; renderTrack(); } });
-    video.addEventListener("timeupdate", onTime);
-    video.addEventListener("seeked", onTime);
-    const jt = parseFloat(params.get("t"));
-    if (!isNaN(jt)) video.addEventListener("loadedmetadata", () => (video.currentTime = Math.max(0, jt - LEAD)), { once: true });
-  } else {
-    video = null;
-    $("#player").innerHTML = `<div class="player-empty">${icon("window", "big")}<div>${rec?.status === "recording"
-      ? "The session is still being recorded. Flags appear here as they come in."
-      : "No screen recording for this session yet. Flags and the transcript can still be reviewed."}</div></div>`;
-  }
+  if (!S.recording?.file) { $('#player').classList.add('hidden'); $('#follow').closest('label').classList.add('hidden'); return; }
+  $('#player').classList.remove('hidden');
+  $('#player').innerHTML = `<video id="video" controls preload="metadata" src="/api/sessions/${sid}/recording"></video>`;
+  video = $('#video'); video.ontimeupdate = onTime;
+  video.onloadedmetadata = () => { if (isFinite(video.duration)) duration = video.duration; if (params.get('t')) video.currentTime = Math.max(0, +params.get('t') - 15); renderTrack(); };
 }
-
-function seek(sec, play = true) {
-  if (!video) return;
-  video.currentTime = Math.max(0, Math.min(sec, (video.duration || duration) - 0.5));
-  if (play) video.play().catch(() => {});
-}
-const now = () => (video ? video.currentTime : null);
-
-// ------------------------------------------------------------------ timeline track
-
-function visibleCandidates() {
-  if (researcher) return S.candidates;
-  // Participants see each unflagged moment once, whichever coder (codebook or judge) found it.
-  const linked = new Set((S.analysis?.links || []).map((l) => l.candidate));
-  const seen = new Set();
-  return S.candidates
-    .filter((c) => !linked.has(c.id) && c.mechanism === "spark" && (c.source === "judge" ? c.confidence >= 0.5 : c.rank === 1))
-    .sort((a, b) => (b.source === "judge") - (a.source === "judge"))
-    .filter((c) => !seen.has(c.trigger_event_id) && seen.add(c.trigger_event_id));
-}
-
+function seek(t) { if (video) video.currentTime = Math.max(0, Math.min(t, duration)); }
 function renderTrack() {
-  const pct = (sec) => `${Math.max(0, Math.min(100, (100 * sec) / (duration || 1)))}%`;
-  const track = $("#track");
-  $$(".pin,.pm,.tick", track).forEach((x) => x.remove());
-  S.events.filter((e) => e.role === "user" && e.t).forEach((e) => {
-    track.insertAdjacentHTML("beforeend", `<span class="tick" style="left:${pct(off(e.t))}" title="Prompt at ${fmtClock(off(e.t))}"></span>`);
-  });
-  if (showParser) {
-    visibleCandidates().forEach((c) => {
-      const e = evById(c.trigger_event_id);
-      if (!e?.t) return;
-      track.insertAdjacentHTML("beforeend", `<button class="pm ${researcher && c.source === "judge" ? "pm-judge" : ""}" data-cand="${c.id}" style="left:${pct(off(e.t))};--tc:${researcher ? TYPE_COLOR[c.type] : "var(--text-3)"}"
-        title="Parser${researcher ? `: ${esc(tLabel(c.type))} (${c.score})` : ""} at ${fmtClock(off(e.t))}"></button>`);
-    });
-  }
-  flags().forEach((m) => {
-    const k = typeOf(m);
-    track.insertAdjacentHTML("beforeend", `<button class="pin ${k ? "" : "bm"}" data-flag="${m.id}" style="left:${pct(off(m.t))};--tc:${TYPE_COLOR[k] || "var(--accent)"}"
-      title="${fmtClock(off(m.t))} · ${esc(tLabel(k) || "Bookmarked")}">${icon(k ? typeByKey(cfg, k)?.icon || "sparkle" : "bookmark")}</button>`);
-  });
-  $$(".pin", track).forEach((p) => (p.onclick = (ev) => { ev.stopPropagation(); openFlag(p.dataset.flag, true); }));
-  $$(".pm", track).forEach((p) => (p.onclick = (ev) => {
-    ev.stopPropagation();
-    const c = S.candidates.find((x) => x.id === p.dataset.cand);
-    seek(off(evById(c.trigger_event_id).t) - 5);
-    $(`[data-cand-card="${c.id}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }));
-  track.onclick = (ev) => {
-    const r = track.getBoundingClientRect();
-    seek(((ev.clientX - r.left) / r.width) * duration, false);
-  };
-  $("#legend").innerHTML = `<span><i class="lg pin-lg"></i>your flags</span><span><i class="lg tick-lg"></i>your prompts</span>${showParser ? `<span><i class="lg pm-lg"></i>found by parser</span>` : ""}
-    <span class="muted grow" style="text-align:right">${fmtClock(0)} – ${fmtClock(duration)}</span>`;
-  onTime();
+  const percent = t => Math.max(0, Math.min(100, offset(t) / duration * 100));
+  $('#track').innerHTML = `<div class="track-line"></div><div class="playhead" id="playhead"></div>` + liveMarks().map(m =>
+    `<button class="pin" data-pin="${m.id}" style="left:${percent(point(m))}%;--tc:${TYPE_COLOR[m.review?.primary || m.quick_type] || 'var(--accent)'}" title="Bookmark ${fmtClock(offset(point(m)))}">${icon('bookmark')}</button>`).join('');
+  $$('[data-pin]').forEach(b => b.onclick = () => openMoment(b.dataset.pin, true));
+  $('#track').onclick = e => { if (!e.target.closest('[data-pin]')) { const box = $('#track').getBoundingClientRect(); seek((e.clientX - box.left) / box.width * duration); } };
+  $('#legend').innerHTML = `<span>Your bookmarks · original click times retained</span><span class="grow muted">${fmtClock(duration)}</span>`;
 }
-
-// ------------------------------------------------------------------ transcript synced to video
-
-function transcriptEvents() {
-  const tools = $("#show-tools").checked;
-  return S.events.filter((e) => ["user", "assistant", "partner"].includes(e.role) || (tools && ["tool_call", "tool_result"].includes(e.role)));
-}
-
 function renderTranscript() {
-  const evs = transcriptEvents();
-  const label = (e) => ({ user: "You", assistant: agentName(), partner: "Partner", tool_call: `Ran ${e.tool || "tool"}`, tool_result: "Tool output" }[e.role]);
-  $("#transcript").innerHTML = evs.length ? evs.map((e) => `
-    <div class="tr-ev ${e.role}" data-ev="${e.id}">
-      <button class="tr-time" ${e.t && video ? "" : "disabled"}>${e.t ? fmtClock(off(e.t)) : ""}</button>
-      <div><div class="r">${esc(label(e))}</div><div class="t">${esc(e.text.length > 900 ? e.text.slice(0, 900) + "…" : e.text)}</div></div>
-    </div>`).join("")
-    : `<p class="muted small">${S.external ? "No agent transcript yet. The participant attaches it at the end of the recording (or a researcher can import it from the dashboard)." : "No conversation yet."}</p>`;
-  $$(".tr-ev", $("#transcript")).forEach((row) => ($(".tr-time", row).onclick = () => {
-    const e = evById(row.dataset.ev);
-    seek(off(e.t) - 2);
+  const tools = $('#show-tools').checked;
+  const events = S.events.filter(e => ['user','assistant','partner'].includes(e.role) || tools && ['tool_call','tool_result'].includes(e.role));
+  $('#transcript').innerHTML = events.map(e => `<div class="tr-ev ${e.role}" data-ev="${e.id}">
+    <button class="tr-time" data-seek="${e.id}">${fmtClock(offset(e.t))}</button><div>
+      <div class="r">${esc(label(e))}${e.meta?.superseded ? ' · archived evidence' : ''}</div>
+      <details class="full-event" ${['user','assistant','partner'].includes(e.role) ? 'open' : ''}><summary>${esc(e.text.slice(0, 90))}${e.text.length > 90 ? '…' : ''}</summary><pre>${esc(e.text)}</pre>${e.output ? `<pre>${esc(e.output)}</pre>` : ''}</details>
+      ${!researcher && !independentDone() ? `<div class="row"><button class="btn btn-sm btn-ghost" data-use="${e.id}">Use this message / add moment</button><button class="btn btn-sm btn-ghost" data-through="${e.id}">Extend passage through here</button></div>` : ''}
+    </div></div>`).join('') || `<p class="muted">No transcript. You can still annotate timestamped bookmarks using the recording.</p>`;
+  $$('[data-seek]').forEach(b => b.onclick = () => seek(offset(eventById(b.dataset.seek).t) - 5));
+  $$('[data-use]').forEach(b => b.onclick = async () => { selectedStart = b.dataset.use; if (!openId) await addMoment(selectedStart); forms.get(openId)?.selectPassage(selectedStart); });
+  $$('[data-through]').forEach(b => b.onclick = () => { const start = forms.get(openId)?.startId(); if (!openId || !start) return toast('Select a starting message first'); forms.get(openId)?.selectPassage(start, b.dataset.through); });
+}
+function onTime() {
+  if (!video) return;
+  $('#playhead').style.left = `${video.currentTime / duration * 100}%`;
+  let current; for (const event of S.events) if (event.t && offset(event.t) <= video.currentTime) current = event;
+  $$('.tr-ev').forEach(row => row.classList.toggle('active', row.dataset.ev === current?.id));
+  if ($('#follow').checked && !video.paused) $(`.tr-ev[data-ev="${current?.id}"]`)?.scrollIntoView({ block: 'nearest' });
+}
+function exposures(m) {
+  if (!m.exposure?.events?.length) return '<p class="small muted">No rendered-text snapshot was captured for this bookmark.</p>';
+  return `<details class="exposure"><summary>What was rendered when you clicked</summary><p class="small muted">This is a display snapshot, not proof you read it. It is not replaced by later agent output.</p>${m.exposure.events.map(e => `<pre>${esc(e.rendered_text)}${e.rendered_output ? '\n' + esc(e.rendered_output) : ''}</pre>`).join('')}</details>`;
+}
+function updateIntro() {
+  const marks = liveMarks(), confirmed = marks.filter(m => m.review?.status === 'submitted' && !m.review_dirty).length;
+  $('#intro').innerHTML = `<h2>${researcher ? 'Participant moments' : 'Your moments'}</h2><p class="small muted">${confirmed}/${marks.length} reviews confirmed. ${independentDone() ? 'The independent pass is preserved separately from any suggested moments below.' : 'An unused idea can still be a spark. Unsure and No are valid answers. No bookmarks does not establish that no sparks occurred.'}</p>`;
+}
+function renderMoments() {
+  updateIntro();
+  for (const mark of liveMarks()) {
+    if (forms.has(mark.id)) continue;
+    const card = document.createElement('div'); card.className = `flag-card review-card ${mark.review?.status === 'submitted' ? 'saved' : ''}`; card.dataset.flag = mark.id;
+    const source = mark.source === 'candidate_confirm' ? 'Added after model suggestion' : mark.source === 'review_add' ? 'Added retrospectively during review' : 'Bookmarked during interaction';
+    card.innerHTML = `<div class="flag-head"><button class="time-chip" data-open>${icon('bookmark')}${fmtClock(offset(point(mark)))}</button><span class="small muted grow">${source}</span><button class="icon-btn" data-toggle aria-label="Open moment">${icon('chev')}</button></div><div class="flag-form">${exposures(mark)}${annotationFormHTML(cfg, mark, S.events)}</div>`;
+    $('#flags').appendChild(card);
+    $('[data-open]', card).onclick = () => openMoment(mark.id, true); $('[data-toggle]', card).onclick = () => openMoment(openId === mark.id ? null : mark.id);
+    const replace = m => { const i = S.marks.findIndex(v => v.id === m.id); if (i >= 0) S.marks[i] = m; };
+    const form = wireAnnotationForm(card, mark, { sid, events: S.events, locked: researcher || S.phase === 'done' || !!S.independent_review?.mark_ids.includes(mark.id),
+      onSaved: m => { replace(m); updateIntro(); renderTrack(); }, onChanged: m => { m.review_dirty = true; replace(m); updateIntro(); } });
+    forms.set(mark.id, form);
+  }
+  if (!openId && liveMarks().length) openMoment(liveMarks().find(m => !m.review)?.id || liveMarks()[0].id);
+  let add = $('#add-moment');
+  if (!add && !researcher && !independentDone()) { add = document.createElement('button'); add.id = 'add-moment'; add.className = 'btn btn-sm'; add.textContent = 'Add a missed moment'; add.onclick = () => addMoment(null); $('#flags').after(add); }
+  if (add) add.classList.toggle('hidden', independentDone());
+}
+function openMoment(id, jump = false) {
+  openId = id; $$('.flag-card').forEach(card => card.classList.toggle('open', card.dataset.flag === id));
+  const mark = S.marks.find(m => m.id === id); selectedStart = mark?.episode?.start_event_id || mark?.event_id || null;
+  if (jump && mark) { seek(offset(point(mark)) - 15); $(`.flag-card[data-flag="${id}"]`)?.scrollIntoView({ block: 'nearest' }); }
+}
+async function addMoment(eid, candidate = null, answer = null) {
+  if (independentDone() && !candidate) return;
+  try {
+    const mark = await api('POST', `/api/sessions/${sid}/marks`, { source: candidate ? 'candidate_confirm' : 'review_add', anchor: candidate ? 'suggested_passage' : eid ? 'review_passage' : 'review_timestamp', event_id: eid, client_t: Date.now(), reference_t: eid ? eventById(eid)?.t : video ? t0 + video.currentTime : null,
+      ...(candidate ? { episode: { start_event_id: candidate.start_event_id || eid, end_event_id: candidate.end_event_id || eid } } : {}) });
+    S.marks.push(mark); renderMoments(); openMoment(mark.id);
+    if (candidate) { await api('PATCH', `/api/sessions/${sid}/candidates/${candidate.id}`, { participant_response: { answer, mark_id: mark.id } }); await load(); renderSuggestions(); }
+  } catch (error) { toast(error.message); }
+}
+async function finish() {
+  $('#finish').disabled = true;
+  try {
+    if (!await outbox.flush() || !await flushReviewDrafts()) throw new Error('Resolve unsynced drafts or bookmarks before continuing.');
+    if (!independentDone()) {
+      if (!confirm('Finish your independent review? These answers will be locked before you see model suggestions.')) return;
+      await api('POST', `/api/sessions/${sid}/review/complete-independent`, {}); await load();
+      for (const id of S.independent_review.mark_ids) forms.get(id)?.lock();
+      renderHeader(); renderTranscript(); renderMoments(); renderSuggestions();
+    } else {
+      if (liveMarks().some(m => m.source === 'candidate_confirm' && (m.review_dirty || m.review?.status !== 'submitted'))) throw new Error('Confirm the suggested moments you added before finishing.');
+      await api('POST', `/api/sessions/${sid}/advance`, { phase: 'review' }); await load(); forms.forEach(f => f.lock()); renderHeader(); renderSuggestions(); toast('Review complete — thank you');
+    }
+  } catch (error) { toast(error.message); }
+  finally { if ($('#finish')) $('#finish').disabled = false; }
+}
+function renderSuggestions() {
+  const box = $('#suggestions');
+  if (!researcher && (S.phase === 'done' || !cfg.studies.find(study => study.key === S.study)?.show_candidates_in_review)) { box.innerHTML = ''; return; }
+  if (!researcher && !independentDone()) { box.innerHTML = `<p class="small muted suggestion-lock">LLM suggestions stay hidden until your independent review is complete.</p>`; return; }
+  const candidates = S.candidates.filter(c => c.source === 'judge' && !c.participant_response && (researcher || c.insight_evidence !== 'insufficient'));
+  box.innerHTML = `<h2>${researcher ? 'LLM judge candidates' : 'Optional suggested moments'}</h2><p class="small muted">${S.judge?.status === 'running' ? 'The judge is running…' : S.judge?.status === 'error' ? 'Judge unavailable: ' + esc(S.judge.error) : candidates.length ? 'These are suggestions, not confirmed sparks. Keep your independent answers separate.' : 'No suggestions available. The researcher can run the LLM judge; an empty result is valid.'}</p>` + candidates.map(c => `<div class="cand-card" data-candidate="${c.id}"><p>${esc(c.trigger_quote || eventById(c.trigger_event_id)?.text || '')}</p>${c.uptake_quote ? `<p class="small">Then you: ${esc(c.uptake_quote)}</p>` : ''}${researcher ? `<p class="small muted">${esc(c.insight_evidence || c.mechanism)} · ${esc(c.type)} · ${esc(c.strength || 'uncalibrated')}</p><p>${esc(c.rationale)}</p>` : `<div class="row"><button class="btn btn-sm" data-answer="yes">I noticed this at the time</button><button class="btn btn-sm" data-answer="retrospective">Only now</button><button class="btn btn-sm" data-answer="unsure">Unsure</button><button class="btn btn-sm" data-answer="no">No</button></div>`}</div>`).join('');
+  $$('[data-candidate]').forEach(card => $$('[data-answer]', card).forEach(button => button.onclick = async () => {
+    const candidate = candidates.find(c => c.id === card.dataset.candidate), answer = button.dataset.answer;
+    if (['yes','retrospective'].includes(answer)) return addMoment(candidate.trigger_event_id, candidate, answer);
+    try { await api('PATCH', `/api/sessions/${sid}/candidates/${candidate.id}`, { participant_response: { answer } }); await load(); renderSuggestions(); } catch (error) { toast(error.message); }
   }));
 }
-
-let lastActive = null;
-function onTime() {
-  const t = now() ?? 0;
-  $("#playhead").style.left = `${Math.min(100, (100 * t) / (duration || 1))}%`;
-  // transcript: highlight the last event at or before the playhead
-  const evs = transcriptEvents().filter((e) => e.t);
-  let active = null;
-  for (const e of evs) { if (off(e.t) <= t + 0.5) active = e; else break; }
-  if (active?.id !== lastActive) {
-    $$(".tr-ev.active").forEach((x) => x.classList.remove("active"));
-    const row = active && $(`.tr-ev[data-ev="${active.id}"]`);
-    if (row) {
-      row.classList.add("active");
-      if ($("#follow").checked && video && !video.paused) {
-        const box = $("#transcript");
-        box.scrollTop = row.offsetTop - box.offsetTop - box.clientHeight / 3;
-      }
-    }
-    lastActive = active?.id;
-  }
-  // flags near the playhead light up
-  $$(".flag-card").forEach((c) => {
-    const m = S.marks.find((x) => x.id === c.dataset.flag);
-    const o = off(m.t);
-    c.classList.toggle("live", video && t >= o - LEAD && t <= o + 5);
-  });
-  const add = $("#add-at");
-  if (add) add.textContent = `Add a moment at ${fmtClock(t)}`;
-}
-
-// ------------------------------------------------------------------ flags
-
-function contextAt(m) {
-  const anchor = m.event_id ? evById(m.event_id) : null;
-  const before = S.events.filter((e) => e.t && e.t <= m.t + 1);
-  const agent = anchor && anchor.role !== "user" ? anchor : [...before].reverse().find((e) => ["assistant", "partner"].includes(e.role));
-  const you = [...before].reverse().find((e) => e.role === "user" && (!agent || e.t <= agent.t));
-  const cut = (s, n = 220) => esc(s.length > n ? s.slice(0, n) + "…" : s);
-  if (!you && !agent) return "";
-  return `<div class="flag-ctx">${you ? `<div><b>You:</b> ${cut(you.text)}</div>` : ""}${agent ? `<div><b>${agentName()}:</b> ${cut(agent.text)}</div>` : ""}</div>`;
-}
-
-function flagCardHTML(m, i) {
-  const k = typeOf(m);
-  const t = tLabel(k);
-  const o = off(m.t);
-  return `<div class="flag-card ${m.review ? "saved" : ""} ${openId === m.id ? "open" : ""}" data-flag="${m.id}">
-    <div class="flag-head">
-      <button class="time-chip" ${video ? "" : "disabled"} title="Watch from ${fmtClock(o - LEAD)}">${icon("play")}${fmtClock(o)}</button>
-      <span class="type-chip ${k ? "" : "bm"}" style="--tc:${TYPE_COLOR[k] || "var(--accent)"}">${icon(k ? typeByKey(cfg, k)?.icon || "sparkle" : "bookmark")}${esc(t || "Bookmarked · explain later")}</span>
-      <span class="grow"></span>
-      <span class="status">${m.review ? `${icon("check")} Annotated` : `<span class="muted">Flag ${i + 1}</span>`}</span>
-      <button class="icon-btn toggle" aria-label="Annotate">${icon("chev")}</button>
-    </div>
-    ${contextAt(m)}
-    ${m.source && !["overlay", "hotkey"].includes(m.source) ? `<div class="small muted">${m.source === "review_add" ? "added during review" : m.source === "candidate_confirm" ? "confirmed from parser suggestion" : esc(m.source)}</div>` : ""}
-    <div class="flag-form">${annotationFormHTML(cfg, m, { external: S.external })}</div>
-  </div>`;
-}
-
-function renderFlags() {
-  const list = flags();
-  const done = list.filter((m) => m.review).length;
-  $("#intro").innerHTML = researcher ? `<h2 style="margin:0 0 4px">Participant flags</h2><p class="small muted" style="margin-top:0">${list.length} flags · ${done} annotated</p>`
-    : `<h2 style="margin:0 0 4px">Your flagged moments</h2>
-      <p class="small muted" style="margin-top:0">${list.length ? `You flagged <b>${list.length}</b> moment${list.length > 1 ? "s" : ""} (${done} annotated). Press ▶ to rewatch the lead-up to each one, then tell us what happened.` : "You didn't flag any moments. You can scrub through the recording and add one if something stands out."}</p>`;
-  if (!openId) openId = list.find((m) => !m.review)?.id || null;
-  $("#flags").innerHTML = list.map(flagCardHTML).join("") +
-    `<button class="btn btn-sm btn-accent" id="add-at" ${video ? "" : "disabled"} style="margin-top:6px">${icon("plus")}Add a moment</button>`;
-  $$(".flag-card").forEach((card) => {
-    const m = S.marks.find((x) => x.id === card.dataset.flag);
-    $(".time-chip", card).onclick = () => { seek(off(m.t) - LEAD); openFlag(m.id); };
-    $(".toggle", card).onclick = () => openFlag(openId === m.id ? null : m.id);
-    wireAnnotationForm(card, m, {
-      sid,
-      onSaved: () => {
-        const next = flags().find((x) => !x.review && x.id !== m.id);
-        openId = next?.id || null;
-        renderFlags(); renderTrack();
-      },
-      onRemoved: () => { openId = null; renderFlags(); renderTrack(); },
-    });
-  });
-  $("#add-at").onclick = async () => {
-    const m = await api("POST", `/api/sessions/${sid}/marks`, { t: t0 + now(), source: "review_add", anchor: "video" });
-    S.marks.push(m);
-    openId = m.id;
-    renderFlags(); renderTrack();
-  };
-  onTime();
-}
-
-function openFlag(id, scroll = false) {
-  openId = id;
-  $$(".flag-card").forEach((c) => c.classList.toggle("open", c.dataset.flag === id));
-  if (id && scroll) {
-    const m = S.marks.find((x) => x.id === id);
-    seek(off(m.t) - LEAD);
-    $(`.flag-card[data-flag="${id}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-}
-
-// ------------------------------------------------------------------ parser results
-
-function renderParser() {
-  const box = $("#parser");
-  const det = S.detection || {};
-  if (!S.events.length) { box.innerHTML = ""; return; }
-  if (!showParser) {
-    box.innerHTML = `<div class="section-title">${icon("sparkle")}<h2 style="margin:0">Other moments</h2></div>
-      <p class="small muted">When you've gone through your own flags, look at a few moments the conversation parser picked out.</p>
-      <button class="btn btn-sm" id="show-parser">Show other moments</button>`;
-    $("#show-parser").onclick = () => { showParser = true; renderParser(); renderTrack(); };
-    return;
-  }
-  const list = visibleCandidates().filter((c) => researcher || !c.participant_response).slice(0, researcher ? 200 : 8);
-  const head = researcher
-    ? `<div class="section-title">${icon("sparkle")}<h2 style="margin:0">Parser candidates</h2></div>
-       <p class="small muted" style="margin-top:0">◆ codebook v${esc(det.codebook_version || "?")}: ${S.analysis?.codebook || 0} · ★ LLM judge: ${S.judge?.status === "done" ? S.analysis?.judge || 0 : "not run"} · ${S.analysis?.matched_marks || 0}/${S.analysis?.marks || 0} flags matched</p>`
-    : `<div class="section-title">${icon("sparkle")}<h2 style="margin:0">Other moments</h2></div>
-       <p class="small muted" style="margin-top:0">Did any of these shift your thinking? Only say yes if it really did.</p>`;
-  box.innerHTML = head + (list.length ? list.map((c) => {
-    const tr = evById(c.trigger_event_id), up = evById(c.uptake_event_id);
-    const o = tr?.t ? off(tr.t) : null;
-    const linked = (S.analysis?.links || []).filter((l) => l.candidate === c.id).length;
-    return `<div class="cand-card" data-cand-card="${c.id}">
-      <div class="flag-head">
-        <button class="time-chip" ${video && o != null ? "" : "disabled"}>${icon("play")}${fmtClock(o)}</button>
-        ${researcher ? `<span class="tag">${c.source === "judge" ? "★ LLM judge" : "◆ codebook"}</span><span class="type-chip" style="--tc:${TYPE_COLOR[c.type]}">${icon(typeByKey(cfg, c.type)?.icon || "sparkle")}${esc(tLabel(c.type))}</span>
-          <span class="tag">${esc(c.mechanism)}</span><span class="tag">${c.source === "judge" ? `${Math.round(c.confidence * 100)}%${c.quotes_verified ? "" : " · quote unverified"}` : `score ${c.score}`}</span>${linked ? `<span class="tag">matches a flag</span>` : ""}` : ""}
-      </div>
-      ${tr ? `<div class="flag-ctx"><div><b>${tr.role === "user" ? "You" : agentName()}:</b> ${esc(c.trigger_quote || tr.text.slice(0, 200))}</div>
-        ${up && up.id !== tr.id ? `<div><b>Then you:</b> ${esc(c.uptake_quote || up.text.slice(0, 200))}</div>` : ""}</div>` : ""}
-      ${researcher ? `<details class="small"><summary>Why</summary>${c.source === "judge" ? `<p style="margin:6px 0">${esc(c.rationale)}</p>${c.before ? `<p class="muted" style="margin:0">Before: ${esc(c.before)}<br>After: ${esc(c.after)}</p>` : ""}` : `<ul class="rules">${(c.rules || []).map((r) => `<li><code>${esc(r.rule)}</code> +${r.weight} ${esc(r.evidence)}</li>`).join("")}</ul>`}</details>
-        ${c.participant_response ? `<div class="small muted">Participant said: ${esc(c.participant_response.answer)}</div>` : ""}`
-      : `<div class="row" style="margin-top:8px"><span class="small grow">Did this shift your thinking?</span>
-        <button class="btn btn-sm" data-ans="yes">Yes</button><button class="btn btn-sm" data-ans="no">No</button><button class="btn btn-sm btn-ghost" data-ans="unsure">Not sure</button></div>`}
-    </div>`;
-  }).join("") : `<p class="small muted">${researcher ? "No candidates. Run the parser after the transcript is attached." : "Nothing else to look at."}</p>`);
-  $$("[data-cand-card]", box).forEach((el) => {
-    const c = S.candidates.find((x) => x.id === el.dataset.candCard);
-    const tr = evById(c.trigger_event_id);
-    $(".time-chip", el).onclick = () => tr?.t && seek(off(tr.t) - 5);
-    $$("[data-ans]", el).forEach((b) => (b.onclick = async () => {
-      const answer = b.dataset.ans;
-      let mark_id = null;
-      if (answer === "yes") {
-        const m = await api("POST", `/api/sessions/${sid}/marks`, { event_id: c.trigger_event_id, t: tr?.t, anchor: "candidate", source: "candidate_confirm" });
-        S.marks.push(m);
-        mark_id = m.id;
-        openId = m.id;
-      }
-      c.participant_response = { answer, mark_id };
-      await api("PATCH", `/api/sessions/${sid}/candidates/${c.id}`, { participant_response: { answer, mark_id } });
-      renderFlags(); renderTrack(); renderParser();
-    }));
-  });
-}
-
-function renderAll() {
-  renderTop();
-  renderTrack();
-  renderTranscript();
-  renderFlags();
-  renderParser();
-}
-
-// ------------------------------------------------------------------ boot
-
-cfg = await config();
-await load();
-renderPlayer();
-renderAll();
-$("#show-tools").onchange = () => { renderTranscript(); lastActive = null; onTime(); };
-// While the overlay is still recording, pick up new flags as they arrive.
-setInterval(async () => {
-  if (S.phase !== "chat" && S.recording?.file && S.detection?.status !== "running") return;
-  const before = S.marks.length, hadFile = !!S.recording?.file, hadEvents = S.events.length, det = S.detection?.status;
-  await load();
-  if (!hadFile && S.recording?.file) { renderPlayer(); return renderAll(); }
-  if (S.marks.length !== before || S.events.length !== hadEvents || S.detection?.status !== det) renderAll();
-}, 4000);
+cfg = await config(); await load(); outbox = new BookmarkOutbox(sid, () => {}); await outbox.flush(); await load();
+renderHeader(); renderPlayer(); renderTrack(); $('#show-tools').checked = true; renderTranscript(); renderMoments(); renderSuggestions();
+$('#show-tools').onchange = renderTranscript;
+setInterval(async () => { try { await load(); renderMoments(); renderSuggestions(); } catch {} }, 5000);

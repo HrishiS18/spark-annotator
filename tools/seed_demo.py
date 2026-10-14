@@ -5,7 +5,7 @@
 1. A moral-dilemma session (AI partner) with before/after essays and reviewed marks.
 2. An external Claude Code session (the Lean "generative error" example) imported from
    samples/claude_code_lean_session.jsonl, with companion-window marks aligned by time.
-Detection and before/after tracing run with Claude if credentials are set, otherwise heuristics.
+No automatic detection or inference runs; researchers can explicitly invoke the LLM judge.
 """
 
 import os
@@ -14,7 +14,6 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import server  # noqa: E402
-import detector  # noqa: E402
 import parsers  # noqa: E402
 
 DILEMMA_CHAT = [
@@ -61,13 +60,6 @@ def seed_dilemma():
                            "quick_type": quick, "draft_len": 0, "review": review})
     server.advance(s, "chat")
     server.advance(s, "post", POST)
-    server.advance(s, "review")
-    cands, meta, turns = detector.detect(s["events"], server.context_for(s))
-    for c in cands:
-        c["id"] = server.new_id("c")
-        c["participant_response"] = None
-    s["candidates"], s["detection"], s["parse_turns"] = cands, dict(meta, status="done", n=len(cands)), turns
-    s["trace"] = detector.trace_diff(PRE, POST, s["events"], server.context_for(s))
     server.save(s)
     return s
 
@@ -93,11 +85,6 @@ def seed_agentic():
     # No video in the seed (a real one comes from /record); the timeline still uses this start time.
     s["recording"] = {"status": "none", "started_t": t0, "started_at": parsers.parse_ts(t0)[0], "duration": duration}
     server.advance(s, "chat")
-    cands, dmeta, turns = detector.detect(events, server.context_for(s))
-    for c in cands:
-        c["id"] = server.new_id("c")
-        c["participant_response"] = None
-    s["candidates"], s["detection"], s["parse_turns"] = cands, dict(dmeta, status="done", n=len(cands)), turns
     server.save(s)
     return s
 
@@ -106,4 +93,4 @@ if __name__ == "__main__":
     a = seed_dilemma()
     b = seed_agentic()
     print("Seeded:", a["id"], "(dilemma)", b["id"], "(external agent)")
-    print("Detector:", a["detection"]["method"])
+    print("No automatic predictions seeded; the LLM judge is researcher-triggered.")
