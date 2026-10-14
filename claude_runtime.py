@@ -55,10 +55,15 @@ class ClaudeRuntimeManager(RuntimeManager):
                     "auth_mode":"synthetic","model":"TEST ONLY","local_only":True,"reason":None}
         installed = bool(self.binary and self.binary.is_file())
         key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        reason = None
+        if not installed:
+            reason = "Claude Agent SDK is not installed on the server. Install requirements.txt in the server's Python environment."
+        elif not key:
+            reason = "Claude is installed, but this server has no Anthropic API key. Configure ANTHROPIC_API_KEY on the Mac running the server, then restart it."
         return {"kind":"claude","installed":installed,"version":self.version,"sdk_version":self.sdk_version,
                 "configured":installed and key,"auth_mode":"api_key","local_only":True,
                 "model":os.environ.get("SPARK_CLAUDE_MODEL","sonnet"),
-                "reason":None if installed and key else "Install claude-agent-sdk and configure ANTHROPIC_API_KEY on the execution host."}
+                "reason":reason}
 
     def command(self, workspace):
         if self.command_override: return self.command_override

@@ -116,6 +116,22 @@ class ClaudeRuntimeTests(unittest.TestCase):
             with self.assertRaises(RuntimeUnavailable): manager.get(self.sid)
         manager.close()
 
+    def test_setup_message_distinguishes_missing_sdk_and_missing_key(self):
+        manager=ClaudeRuntimeManager(self.store,self.root)
+        with patch.dict(os.environ,{"ANTHROPIC_API_KEY":""}):
+            status=manager.status()
+            self.assertTrue(status["installed"])
+            self.assertIn("Claude is installed",status["reason"])
+            self.assertIn("ANTHROPIC_API_KEY",status["reason"])
+            self.assertNotIn("Install claude-agent-sdk",status["reason"])
+        with patch.dict(os.environ,{"ANTHROPIC_API_KEY":"TEST_KEY_SENTINEL"}):
+            self.assertIsNone(manager.status()["reason"])
+            self.assertTrue(manager.status()["configured"])
+            manager.binary=None
+            self.assertIn("not installed",manager.status()["reason"])
+            self.assertFalse(manager.status()["configured"])
+        manager.close()
+
     def test_path_policy_blocks_private_and_symlink_targets(self):
         root=self.manager.workspace(self.sid); root.mkdir(parents=True)
         (root/"escape").symlink_to(self.root/"study.sqlite3")

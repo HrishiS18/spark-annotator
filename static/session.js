@@ -165,8 +165,8 @@ function scrollBottom() { const c = $("#content"); c.scrollTop = c.scrollHeight;
 function chatView() {
   $("#content").innerHTML = `<div class="narrow"><p class="instructions small">${esc(study.chat_instructions)}</p>
     <div class="runtime-panel" id="runtime-panel"></div><div id="approvals"></div>
-    ${isAgentRuntime() ? `<details class="workspace-panel"><summary>Task workspace <span class="small muted">files live on the execution host</span></summary>
-      <p class="small muted">Only upload files you intend to share with the agent. Existing files are never overwritten.</p>
+    ${isAgentRuntime() ? `<details class="workspace-panel"><summary>Task files</summary>
+      <p class="small muted">These files are saved on the Mac running the server and shared with the agent. Existing files are never overwritten.</p>
       <label class="btn btn-sm">${icon("upload")} Add task file<input id="workspace-upload" type="file" hidden></label>
       <button class="btn btn-sm btn-ghost" id="refresh-files">Refresh files</button><div id="workspace-files"></div><pre id="file-preview" class="hidden"></pre></details>` : ""}
     <div class="thread" id="thread"></div><div id="typing"></div></div>`;
@@ -231,7 +231,6 @@ function renderRuntime() {
   const status = connecting ? "connecting" : runtime.status || "disconnected";
   panel.innerHTML = `<div class="row"><span class="status-pill">${agentName()} · ${esc(status.replaceAll("_", " "))}</span>
       <span class="small muted">${esc(runtime.model || "Configured model")} · ${esc(runtime.version || cfg.runtimes?.[runtime.kind]?.version || cfg.runtime.version || "")}</span></div>
-      <p class="small muted">Local development runtime. Commands operate on its task workspace, not automatically on your personal files.</p>
       ${runtime.error ? `<div class="runtime-error" role="alert">${esc(runtime.error)}</div>` : ""}`;
   $("#send").disabled = busy || active || connecting || !["ready", "interrupted", "failed"].includes(runtime.status);
   $("#finish").disabled = busy || active || connecting;

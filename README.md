@@ -34,6 +34,8 @@ Verified locally with SDK **0.2.165**, Claude Code **2.1.294**, and effective mo
 
 Integrated studies: **task → unaided baseline → interaction → unaided final write-up → independent review → optional model suggestions**.
 
+The landing page is session setup only. Persona controls are under **Session settings**; recording and researcher tools have separate links. The spark taxonomy is not shown before the task. Claude readiness distinguishes a missing SDK from a missing server API key, and unavailable agents cannot start a new session.
+
 During interaction:
 
 - One-click bookmarking; optional plain-language taxonomy tags.
