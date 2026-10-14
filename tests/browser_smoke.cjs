@@ -37,8 +37,8 @@ const assert = require('node:assert/strict');
     await page.locator('#start button[type=submit]:enabled').waitFor();
     assert.equal(await page.locator('#tax, .tax-grid, #parser-pill, .cards').count(),0);
     assert.equal(await page.locator('details.home-settings').getAttribute('open'),null);
-    assert.equal(await page.getByRole('link',{name:'Screen recorder',exact:true}).getAttribute('href'),'/record');
-    assert.equal(await page.getByRole('link',{name:'Researcher dashboard',exact:true}).getAttribute('href'),'/researcher');
+    assert.equal(await page.getByRole('link',{name:'Screen recorder',exact:true}).count(),0);
+    assert.equal(await page.getByRole('link',{name:'Researcher dashboard',exact:true}).count(),0);
     await page.locator('#start [name=condition]').selectOption('human');
     assert(await page.locator('#room-field').isVisible());
     assert(await page.locator('#runtime-field').isHidden());
@@ -95,6 +95,11 @@ const assert = require('node:assert/strict');
     await page.locator('#send').click();
     await page.locator('.approval-card').waitFor();
     console.log('QA: streamed approval ready');
+    if (runtime === 'codex') {
+      assert.equal(await page.locator('.approval-card [data-decision=acceptForSession]').count(),1);
+    } else {
+      assert.equal(await page.locator('.approval-card [data-decision=acceptForSession]').count(),0);
+    }
     assert(await page.locator('#send').isDisabled());
     await page.context().setOffline(true);
     await page.locator('.msg-ai .mark-here').first().click();

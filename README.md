@@ -14,6 +14,8 @@ Open http://127.0.0.1:8765. The two integrated AI choices are **Codex app-server
 
 Codex must be installed on the execution host and signed in (`codex login`). The macOS desktop-app executable is detected if absent from PATH. Existing Codex/ChatGPT login works for local development; API-key authentication is also supported by the agent bridge using server-side configuration. Never put keys in participant messages or configuration files.
 
+Codex sessions use the built-in `:workspace` permission profile with `on-request` approvals: routine reads, edits, and commands inside the task workspace run automatically. Codex prompts only when an action must cross that boundary, and a participant can allow a matching request once or for the rest of the session. The setup page discloses this fixed study permission profile up front; participants do not choose different profiles within a condition. [Official permissions reference](https://learn.chatgpt.com/docs/permissions).
+
 New participant sessions cannot select plain LLM chat or scripted demo. Existing legacy data and internal synthetic fixtures remain supported; no live failures become demo responses.
 
 ### Claude agent setup
@@ -24,7 +26,7 @@ Configure `ANTHROPIC_API_KEY` in the execution host environment before starting 
 
 Claude uses `ClaudeSDKClient` in a private stdio subprocess, preserving the Claude Code system-prompt preset and appending the study persona. Native messages, tool calls/results, and questions become the same event format as Codex, with raw SDK evidence retained separately. Participant answers to native questions are saved before delivery to the agent. The baseline, flags and reviews are never passed to the task agent.
 
-Runtime settings: `SPARK_CLAUDE_MODEL` (default native `sonnet` alias; effective model recorded), `SPARK_CLAUDE_EFFORT` (default medium), `SPARK_CLAUDE_MAX_BUDGET_USD` (default 2, SDK estimated per-query cap; not a guaranteed billing ceiling). A single macOS Seatbelt boundary covers the SDK and its tool subprocesses: study records/peer workspaces are inaccessible and writes are restricted to the task workspace and OS temporary directories. Native Bash sandboxing is explicitly off because Seatbelt cannot be nested; this is not an unsandboxed fallback. Writes/commands require participant approval, direct file paths are checked, and the native subprocess credential scrub is enabled. Personal settings, skills, plugins, MCP connectors, and subagents are disabled in this controlled prototype. Approved commands can access the network; this is not network-isolated.
+Runtime settings: `SPARK_CLAUDE_MODEL` (default native `sonnet` alias; effective model recorded), `SPARK_CLAUDE_EFFORT` (default medium), `SPARK_CLAUDE_MAX_BUDGET_USD` (default 2, SDK estimated per-query cap; not a guaranteed billing ceiling). A single macOS Seatbelt boundary covers the SDK and its tool subprocesses: study records/peer workspaces are inaccessible and writes are restricted to the task workspace and OS temporary directories. Native Bash sandboxing is explicitly off because Seatbelt cannot be nested; this is not an unsandboxed fallback. Workspace reads and edits proceed automatically; Bash and network tools still require participant approval because arbitrary commands cannot be safely scoped by the adapter. Direct file paths are checked, and the native subprocess credential scrub is enabled. Personal settings, skills, plugins, MCP connectors, and subagents are disabled in this controlled prototype. Approved commands can access the network; this is not network-isolated.
 
 Each session persists native SDK state under `data/workspaces/<session-id>/.runtime/claude/`, separate from the app transcript. This folder is excluded from artifact browsing and direct agent file-tool access. Reconnect replays native history without inference, preserving event IDs and original click snapshots. This is not full host/credential isolation; do not deploy this using a shared researcher's key without proper isolation and quotas.
 
@@ -34,7 +36,7 @@ Verified locally with SDK **0.2.165**, Claude Code **2.1.294**, and effective mo
 
 Integrated studies: **task → unaided baseline → interaction → unaided final write-up → independent review → optional model suggestions**.
 
-The landing page is session setup only. Persona controls are under **Session settings**; recording and researcher tools have separate links. The spark taxonomy is not shown before the task. Claude readiness distinguishes a missing SDK from a missing server API key, and unavailable agents cannot start a new session.
+The participant landing page is session setup only. Persona controls are under **Session settings**; recording and researcher tools remain at `/record` and `/researcher` rather than appearing in the participant flow. The spark taxonomy is not shown before the task. Claude readiness distinguishes a missing SDK from a missing server API key, and unavailable agents cannot start a new session.
 
 During interaction:
 
@@ -136,7 +138,7 @@ Study data is local to the execution host, **not model inference**. Codex also m
 
 ## Prototype limits
 
-**macOS execution host + localhost only for integrated agents.** Python 3.10+ is required for the Claude SDK. The macOS privacy fence protects study records and other sessions' workspaces. Sandboxing and explicit approvals do not provide full host/credential isolation. Use synthetic, non-sensitive tasks during development.
+**macOS execution host + localhost only for integrated agents.** Python 3.10+ is required for the Claude SDK. Codex uses its native `:workspace` permission profile; it is deliberately not wrapped in a second Seatbelt profile because nested macOS sandboxes fail and cause spurious approval prompts. Claude uses a single process-tree Seatbelt fence. These controls do not provide full hosted multi-tenant or credential isolation. Use synthetic, non-sensitive tasks during development.
 
 Researcher/participant authentication, hosted execution isolation, quotas, resource limits, pairing/deployment hardening, formal adjudication, and adequately powered judge validation remain unfinished. The local tool now supports blinded double-coding, but tokenized coder links and UI/API-view hiding are workflow safeguards, **not an authorization boundary**; researcher/export routes are currently unauthenticated. Do not expose this publicly or share a researcher's ChatGPT login as a hosted service credential.
 

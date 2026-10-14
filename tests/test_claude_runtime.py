@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from claude_runtime import ClaudeRuntimeManager, claude_privacy_command
-from claude_sdk_worker import allowed_path, allowed_tool
+from claude_sdk_worker import CLAUDE_ASK_TOOLS, CLAUDE_PERMISSION_MODE, allowed_path, allowed_tool
 from codex_runtime import RuntimeUnavailable
 from storage import Store
 from tests.test_runtime import runtime_session
@@ -149,6 +149,12 @@ class ClaudeRuntimeTests(unittest.TestCase):
         self.assertFalse(allowed_tool(root,"Bash",{"command":"pwd","dangerouslyDisableSandbox":True}))
         self.assertTrue(allowed_tool(root,"Glob",{"pattern":"**/*.txt"}))
         self.assertTrue(allowed_tool(root,"Grep",{"pattern":"..","path":"."}))
+
+    def test_permission_profile_auto_accepts_edits_but_not_commands_or_network(self):
+        self.assertEqual(CLAUDE_PERMISSION_MODE,"acceptEdits")
+        self.assertEqual(CLAUDE_ASK_TOOLS,["Bash","WebFetch","WebSearch"])
+        self.assertNotIn("Write",CLAUDE_ASK_TOOLS)
+        self.assertNotIn("Edit",CLAUDE_ASK_TOOLS)
 
     def test_reconnecting_unfinished_tool_preserves_ids_without_execution(self):
         w,_,s=self.turn()

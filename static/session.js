@@ -32,12 +32,12 @@ async function load() {
 // ------------------------------------------------------------------ shell
 
 function renderShell() {
-  $("#brand").innerHTML = `${icon("bulb")}<span>Spark study</span>`;
+  $("#brand").innerHTML = `${icon("chat")}<span>Task session</span>`;
   $("#top-ic").innerHTML = icon("chat");
   $("#top-title").textContent = S.prompt.title;
   $("#fab-ic").innerHTML = icon("bulb");
-  $("#task").innerHTML = `<h3>${esc(S.prompt.title)}</h3><div class="muted">${esc(S.prompt.text)}</div>`;
-  $("#foot").textContent = `${S.participant_id} · ${S.id}`;
+  $("#task").innerHTML = `<details open><summary>Task brief</summary><div class="task-text">${esc(S.prompt.text)}</div></details>`;
+  $("#foot").textContent = "";
   renderSteps();
 }
 
@@ -81,6 +81,7 @@ function route() {
   $("#composer-wrap").classList.add("hidden");
   $("#fab").classList.add("hidden");
   $("#top-actions").innerHTML = "";
+  $("#top-runtime").innerHTML = "";
   ({ pre: writingView, post: writingView, chat: S.external ? externalView : chatView, review: reviewView, done: doneView })[S.phase]();
   tick();
 }
@@ -219,19 +220,22 @@ function chatView() {
 
 function renderRuntime() {
   const panel = $("#runtime-panel");
+  const compact = $("#top-runtime");
   if (!panel) return;
   if (!isAgentRuntime()) {
     const mode = S.condition === "human" ? "Human partner" : S.runtime?.kind === "demo" ? "SCRIPTED DEMO — not a live model" : S.runtime?.kind === "legacy" ? "Legacy saved conversation — runtime configuration was not recorded" : "Plain LLM chat — no agent tools";
-    panel.innerHTML = `<span class="status-pill">${esc(mode)}</span>`;
+    panel.innerHTML = `<span class="sr-only">${esc(mode)}</span>`;
+    compact.innerHTML = `<span class="runtime-compact"><i></i>${esc(mode)}</span>`;
     $("#send").disabled = busy;
     return;
   }
   const runtime = S.runtime;
   const active = ["starting", "running", "awaiting_approval"].includes(runtime.status);
   const status = connecting ? "connecting" : runtime.status || "disconnected";
-  panel.innerHTML = `<div class="row"><span class="status-pill">${agentName()} · ${esc(status.replaceAll("_", " "))}</span>
-      <span class="small muted">${esc(runtime.model || "Configured model")} · ${esc(runtime.version || cfg.runtimes?.[runtime.kind]?.version || cfg.runtime.version || "")}</span></div>
+  panel.innerHTML = `<span class="sr-only">${esc(status.replaceAll("_", " "))}</span>
       ${runtime.error ? `<div class="runtime-error" role="alert">${esc(runtime.error)}</div>` : ""}`;
+  const statusClass = ["ready","running"].includes(status) ? "ok" : ["error","failed","interrupted"].includes(status) ? "bad" : "";
+  compact.innerHTML = `<span class="runtime-compact ${statusClass}" title="${esc(agentName())} status"><i></i>${esc(status.replaceAll("_", " "))}</span>`;
   $("#send").disabled = busy || active || connecting || !["ready", "interrupted", "failed"].includes(runtime.status);
   $("#finish").disabled = busy || active || connecting;
   $("#stop-agent").classList.toggle("hidden", !active);
@@ -250,10 +254,12 @@ function renderRuntime() {
       <button class="btn btn-primary btn-sm" data-decision="accept">Send answers</button><button class="btn btn-sm" data-decision="decline">Decline</button></div>`;
     const item = S.events.find((e) => e.meta?.runtime_item_id === a.params.itemId);
     const description = a.params.command || item?.text || a.params.reason || "The agent requested permission.";
+    const canAcceptForSession = (a.params.availableDecisions || []).includes("acceptForSession");
     return `<div class="approval-card" data-approval="${a.id}"><h3>Agent approval required</h3>
       <pre>${esc(description)}</pre>${a.params.reason ? `<p>${esc(a.params.reason)}</p>` : ""}
-      <p class="small muted">Approval can authorize access beyond the command's normal sandbox. Decline anything unrelated to the task.</p>
+      <p class="small muted">This action is not covered by the session's automatic task-workspace permissions.</p>
       <button class="btn btn-primary btn-sm" data-decision="accept">Allow once</button>
+      ${S.runtime.kind === "codex" && canAcceptForSession ? `<button class="btn btn-sm" data-decision="acceptForSession">Allow similar this session</button>` : ""}
       <button class="btn btn-sm" data-decision="decline">Decline</button></div>`;
   }).join("");
   $$('[data-approval]').forEach(card=>$$('[data-answer]',card).forEach(input=>{

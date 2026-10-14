@@ -138,7 +138,7 @@ class ClaudeWorker:
             def ready(s):
                 s["runtime"].update(status="ready",error=None,thread_id=self.thread_id,
                     auth_mode="api_key",version=manager.version,sdk_version=manager.sdk_version,
-                    sandbox="study-data-fence+workspace-write",approval_policy="default+explicit-write-command-approval",
+                    sandbox="study-data-fence+workspace-write",approval_policy="accept-edits+explicit-command-network-approval",
                     active_turn=None,approvals=[])
                 for e in s["events"]:
                     if e.get("status") == "inProgress":

@@ -3,6 +3,7 @@ import { api, config, esc, $ } from "/static/common.js";
 const form = $("#start");
 const button = form.querySelector('button[type="submit"]');
 const status = $("#runtime-status");
+const permissionNote = $("#permission-note");
 let starting = false;
 
 function notice(text, error = false) {
@@ -20,9 +21,15 @@ async function setup() {
 
   function syncRuntime() {
     if (form.condition.value === "human") {
+      permissionNote.textContent = "";
+      permissionNote.classList.add("hidden");
       notice(""); button.disabled = starting; return;
     }
     const kind = form.runtime.value;
+    permissionNote.classList.remove("hidden");
+    permissionNote.textContent = kind === "codex"
+      ? "Agent access: routine reading, editing, and commands inside the task workspace run without interruption. Codex asks before crossing that boundary."
+      : "Agent access: reading and editing inside the task workspace run without interruption. Claude may ask before commands or network access.";
     const runtime = cfg.runtimes?.[kind] || (kind === "codex" ? cfg.runtime : null);
     let message = "";
     if (!runtime?.installed) {

@@ -37,7 +37,8 @@ def turn(text):
     command = {"id": "cmd_mock", "type": "commandExecution", "command": "[TEST ONLY] produce summary.txt", "status": "inProgress"}
     item("item/started", command)
     send({"id": "approval_mock", "method": "item/commandExecution/requestApproval", "params": {
-        "threadId": "thr_mock", "turnId": "turn_mock", "itemId": "cmd_mock", "command": command["command"], "reason": "Test approval flow"}})
+        "threadId": "thr_mock", "turnId": "turn_mock", "itemId": "cmd_mock", "command": command["command"],
+        "reason": "Test approval flow", "availableDecisions": ["accept", "acceptForSession", "decline"]}})
     approved.wait(30)
     if interrupted.is_set():
         return

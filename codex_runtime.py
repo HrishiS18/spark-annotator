@@ -16,6 +16,13 @@ import uuid
 from pathlib import Path
 
 
+# Match the low-friction interactive Codex profile: routine work inside the
+# workspace stays sandboxed and does not require a click. Codex asks only when
+# an action needs to cross that boundary.
+APPROVAL_POLICY = "on-request"
+PERMISSION_PROFILE = ":workspace"
+
+
 class RuntimeUnavailable(ValueError):
     pass
 
@@ -101,15 +108,14 @@ class RpcClient:
 
 
 def privacy_command(binary, data_dir, workspace):
-    """macOS fence: subprocesses cannot read/write private study data or peers.
+    """Build the legacy process privacy fence used by non-Codex workers.
 
-    Codex's own workspaceWrite policy separately restricts command writes. This
-    fence is not a full filesystem/credential isolation strategy for deployment.
-    Other OSes must supply equivalent isolation before enabling this integration.
+    Claude and the read-only judge use the three-element sandbox-exec prefix.
+    Codex app-server must not use it because Codex creates its own sandbox.
     """
     guard = "/usr/bin/sandbox-exec"
     if not Path(guard).is_file():
-        raise RuntimeUnavailable("Local privacy fence requires macOS. Use an isolated execution host before enabling Codex on another OS.")
+        raise RuntimeUnavailable("Local privacy fence requires macOS. Use an isolated execution host before enabling this worker on another OS.")
     data = json.dumps(str(Path(data_dir).resolve()))
     work = json.dumps(str(Path(workspace).resolve()))
     profile = f'''(version 1)
@@ -120,6 +126,18 @@ def privacy_command(binary, data_dir, workspace):
             "-c", 'shell_environment_policy.inherit="core"',
             "-c", 'shell_environment_policy.exclude=["*KEY*","*TOKEN*","*SECRET*","*PASSWORD*"]',
             "-c", 'sandbox_workspace_write.network_access=false',
+            "-c", 'features.multi_agent=false']
+
+
+def app_server_command(binary):
+    """Start app-server without blocking its own native sandbox.
+
+    Wrapping app-server in another macOS Seatbelt profile prevents Codex's
+    per-turn sandbox from initializing and turns routine actions into prompts.
+    """
+    return [binary, "app-server", "--listen", "stdio://",
+            "-c", 'shell_environment_policy.inherit="core"',
+            "-c", 'shell_environment_policy.exclude=["*KEY*","*TOKEN*","*SECRET*","*PASSWORD*"]',
             "-c", 'features.multi_agent=false']
 
 
@@ -148,7 +166,8 @@ class Worker:
         try:
             self.rpc = manager.rpc_factory(command, str(self.workspace), self.notification, self.disconnected)
             self.rpc.request("initialize", {"clientInfo": {"name": "spark_annotator",
-                             "title": "Spark Annotator", "version": "0.2.0"}})
+                             "title": "Spark Annotator", "version": "0.2.0"},
+                             "capabilities": {"experimentalApi": True}})
             self.rpc.send({"method": "initialized", "params": {}})
             account = self.rpc.request("account/read", {"refreshToken": False})
             if not account.get("account") and os.environ.get("OPENAI_API_KEY"):
@@ -159,9 +178,10 @@ class Worker:
             if not account.get("account"):
                 raise RuntimeUnavailable("Codex is not signed in. Run `codex login` on this Mac, or configure an API key locally; do not paste a key into the chat.")
             runtime = session["runtime"]
-            # Thread-start SandboxMode uses kebab-case; turn SandboxPolicy's
-            # discriminant uses camelCase in this installed protocol version.
-            params = {"cwd": str(self.workspace), "approvalPolicy": "untrusted", "sandbox": "workspace-write"}
+            # The profile is selected once at thread start/resume and persists
+            # across turns; turn/start must not also send legacy sandbox fields.
+            params = {"cwd": str(self.workspace), "approvalPolicy": APPROVAL_POLICY,
+                      "permissions": PERMISSION_PROFILE}
             if runtime.get("model"):
                 params["model"] = runtime["model"]
             if runtime.get("thread_id"):
@@ -176,8 +196,8 @@ class Worker:
             def ready(s):
                 s["runtime"].update(status="ready", error=None, thread_id=self.thread_id,
                     model=result.get("model") or runtime.get("model"),
-                    model_provider=result.get("modelProvider"), sandbox="workspace-write",
-                    approval_policy="untrusted", auth_mode=account["account"].get("type"),
+                    model_provider=result.get("modelProvider"), sandbox=PERMISSION_PROFILE,
+                    approval_policy=APPROVAL_POLICY, auth_mode=account["account"].get("type"),
                     active_turn=None, approvals=[], version=manager.version)
             self.store.update(sid, ready, {"method": "runtime/ready"})
             # Restore completed/partial items without a new inference request.
@@ -350,9 +370,7 @@ class Worker:
             try:
                 result = self.rpc.request("turn/start", {"threadId": self.thread_id,
                     "input": [{"type": "text", "text": text}], "cwd": str(self.workspace),
-                    "approvalPolicy": "untrusted", "effort": session["runtime"].get("effort", "medium"),
-                    "sandboxPolicy": {"type": "workspaceWrite", "writableRoots": [str(self.workspace)],
-                        "networkAccess": False, "excludeSlashTmp": True, "excludeTmpdirEnvVar": True}})
+                    "approvalPolicy": APPROVAL_POLICY, "effort": session["runtime"].get("effort", "medium")})
                 # turn/started and even turn/completed can precede this response.
                 turn_id = result["turn"]["id"]
                 def accepted(s):
@@ -371,7 +389,7 @@ class Worker:
             return event
 
     def approve(self, aid, decision):
-        if decision not in ("accept", "decline", "cancel"):
+        if decision not in ("accept", "acceptForSession", "decline", "cancel"):
             raise ValueError("Unsupported approval decision")
         with self.lock:
             rid = self.approval_ids.get(aid)
@@ -427,7 +445,7 @@ class RuntimeManager:
 
     def status(self):
         return {"kind": "codex", "installed": bool(self.binary), "version": self.version,
-                "privacy_fence": Path("/usr/bin/sandbox-exec").is_file(),
+                "sandbox": "permission-profile:workspace",
                 "model": os.environ.get("SPARK_CODEX_MODEL") or None,
                 "local_only": True, "note": "Local prototype. Hosting and multi-user credential isolation are not implemented."}
 
@@ -444,7 +462,7 @@ class RuntimeManager:
             return self.command_override
         if not self.binary:
             raise RuntimeUnavailable("Codex is not installed on the execution host.")
-        return privacy_command(self.binary, self.data_dir, workspace)
+        return app_server_command(self.binary)
 
     def get(self, sid):
         with self.lock:

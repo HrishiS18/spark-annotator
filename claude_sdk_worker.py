@@ -10,6 +10,14 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, get_session_me
 from claude_agent_sdk.types import HookMatcher, PermissionResultAllow, PermissionResultDeny, ResultMessage
 
 
+# Claude's closest safe equivalent to Codex's workspace-write/on-request
+# profile. File edits inside the fenced task workspace proceed automatically;
+# shell and network tools still require a participant decision because this
+# adapter cannot safely infer the scope of an arbitrary command.
+CLAUDE_PERMISSION_MODE = "acceptEdits"
+CLAUDE_ASK_TOOLS = ["Bash", "WebFetch", "WebSearch"]
+
+
 def encode(value):
     if dataclasses.is_dataclass(value):
         return {"_type": type(value).__name__, **{f.name: encode(getattr(value,f.name)) for f in dataclasses.fields(value)}}
@@ -130,12 +138,12 @@ async def main(client_factory=ClaudeSDKClient):
                           "\nWork on TASK.md in this workspace. Do not access study records, other sessions, credentials or .runtime."},
                         tools={"type":"preset","preset":"claude_code"}, disallowed_tools=["Agent","Task","Skill"],
                         setting_sources=[], skills=[], plugins=[], mcp_servers={}, strict_mcp_config=True,
-                        permission_mode="default", can_use_tool=permission, include_partial_messages=True,
+                        permission_mode=CLAUDE_PERMISSION_MODE, can_use_tool=permission, include_partial_messages=True,
                         hooks={"PreToolUse":[HookMatcher(hooks=[guard_tool])]},
                         # The host applies a single Seatbelt boundary to this
                         # entire process tree; native Bash sandboxing cannot nest.
                         sandbox={"enabled":False},
-                        settings=json.dumps({"permissions":{"ask":["Bash","Write","Edit","NotebookEdit","WebFetch","WebSearch"]}}),
+                        settings=json.dumps({"permissions":{"ask":CLAUDE_ASK_TOOLS}}),
                         max_budget_usd=config["max_budget_usd"], max_turns=40,
                         env={"CLAUDE_CONFIG_DIR":str(config_dir),"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1",
                              "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB":"1"},

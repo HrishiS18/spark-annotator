@@ -1,12 +1,11 @@
 import os
-import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from codex_runtime import RuntimeManager, RuntimeUnavailable, privacy_command
+from codex_runtime import (APPROVAL_POLICY, PERMISSION_PROFILE, RuntimeManager,
+                           RuntimeUnavailable, app_server_command)
 from storage import Store
 
 
@@ -91,8 +90,11 @@ class RuntimeTests(unittest.TestCase):
         worker = self.manager.get(self.sid)
         start = next(m for m in worker.rpc.sent if m.get("method") == "thread/start")
         self.assertNotIn("PRIVATE BASELINE", str(start))
-        self.assertEqual(start["params"]["approvalPolicy"], "untrusted")
-        self.assertEqual(start["params"]["sandbox"], "workspace-write")
+        self.assertEqual(APPROVAL_POLICY, "on-request")
+        self.assertEqual(start["params"]["approvalPolicy"], "on-request")
+        self.assertEqual(PERMISSION_PROFILE, ":workspace")
+        self.assertEqual(start["params"]["permissions"], ":workspace")
+        self.assertNotIn("sandbox", start["params"])
         self.assertEqual(self.store.load(self.sid)["runtime"]["model"], "mock-model")
         worker.connected = False
         resumed = self.manager.get(self.sid)
@@ -111,6 +113,24 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.store.load(self.sid)["runtime"]["approvals"], [])
         with self.assertRaises(RuntimeUnavailable):
             worker.approve(approval["id"], "accept")
+
+    def test_matching_approvals_can_be_accepted_for_the_session(self):
+        worker = self.manager.get(self.sid)
+        worker.notification({"id": 102, "method": "item/commandExecution/requestApproval", "params": {
+            "threadId": worker.thread_id, "turnId": "turn_test", "itemId": "cmd", "command": "open https://example.com"}})
+        approval = self.store.load(self.sid)["runtime"]["approvals"][0]
+        worker.approve(approval["id"], "acceptForSession")
+        self.assertIn({"id": 102, "result": {"decision": "acceptForSession"}}, worker.rpc.sent)
+        self.assertEqual(self.store.load(self.sid)["runtime"]["approval_history"][-1]["decision"], "acceptForSession")
+
+    def test_turn_uses_low_friction_workspace_policy(self):
+        worker = self.manager.get(self.sid)
+        worker.message("Test", "message-0001")
+        turn = next(m for m in worker.rpc.sent if m.get("method") == "turn/start")
+        self.assertEqual(turn["params"]["approvalPolicy"], "on-request")
+        self.assertNotIn("sandboxPolicy", turn["params"])
+        initialize = next(m for m in worker.rpc.sent if m.get("method") == "initialize")
+        self.assertTrue(initialize["params"]["capabilities"]["experimentalApi"])
 
     def test_tool_results_are_distinct_from_agent_messages(self):
         worker = self.manager.get(self.sid)
@@ -171,24 +191,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(s["events"][0]["id"], user["id"])
         self.assertEqual(s["events"][1]["status"], "interrupted")
 
-    @unittest.skipUnless(Path('/usr/bin/sandbox-exec').exists(), "macOS privacy fence")
-    def test_privacy_fence_blocks_records_and_peer_workspace(self):
-        workspace = self.manager.workspace(self.sid)
-        workspace.mkdir(parents=True)
-        peer = self.manager.workspace("s_87654321")
-        peer.mkdir(parents=True)
-        own = workspace / "own.txt"
-        own.write_text("own")
-        other = peer / "peer.txt"
-        other.write_text("private")
-        prefix = privacy_command(sys.executable, self.root, workspace)[:3]
-        allowed = subprocess.run(prefix + [sys.executable, "-c", "import sys; print(open(sys.argv[1]).read())", str(own)],
-                                 capture_output=True, text=True)
-        self.assertEqual(allowed.returncode, 0, allowed.stderr)
-        for protected in (other, self.store.path):
-            denied = subprocess.run(prefix + [sys.executable, "-c", "import sys; open(sys.argv[1]).read()", str(protected)],
-                                    capture_output=True, text=True)
-            self.assertNotEqual(denied.returncode, 0)
+    def test_native_permission_profile_has_no_nested_seatbelt(self):
+        command = app_server_command("/test/codex")
+        self.assertEqual(command[:4], ["/test/codex", "app-server", "--listen", "stdio://"])
+        self.assertNotIn("sandbox-exec", " ".join(command))
 
 
 if __name__ == '__main__':

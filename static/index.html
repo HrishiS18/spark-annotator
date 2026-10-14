@@ -3,16 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Spark Annotator</title>
+<title>Study session</title>
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body class="home">
 <header class="home-header">
-  <a class="home-brand" href="/">Spark Annotator</a>
-  <nav aria-label="Study tools">
-    <a href="/record">Screen recorder</a>
-    <a href="/researcher">Researcher dashboard</a>
-  </nav>
+  <a class="home-brand" href="/">Study session</a>
 </header>
 
 <main class="home-main">
@@ -34,6 +30,7 @@
         <option value="claude">Claude agent</option>
       </select></label>
     </div>
+    <p class="permission-note" id="permission-note"></p>
     <label class="field hidden" id="room-field"><span>Room code</span><input type="text" name="room" placeholder="e.g. BLUE7"><small>Both participants use the same code.</small></label>
     <details class="home-settings">
       <summary>Session settings</summary>
