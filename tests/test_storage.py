@@ -120,6 +120,19 @@ class StorageTests(unittest.TestCase):
         codes = self.store.load(s["id"])["researcher_annotations"]
         self.assertEqual({r["code"]["coder"] for r in codes}, {"A", "B"})
 
+    def test_validation_codes_are_separate_and_versioned(self):
+        sample = {"id":"vs_123456789abc","created_t":1,"items":[{"id":"vi_one"}],
+                  "coders":[{"id":"coder_a"},{"id":"coder_b"}]}
+        self.store.create_validation_sample(sample)
+        self.store.save_validation_code(sample["id"], "vi_one", "coder_a", {"evidence":"possible"})
+        self.store.save_validation_code(sample["id"], "vi_one", "coder_b", {"evidence":"expressed"})
+        self.store.save_validation_code(sample["id"], "vi_one", "coder_a", {"evidence":"insufficient"})
+        loaded, codes = self.store.validation_sample(sample["id"])
+        self.assertEqual(loaded["id"], sample["id"])
+        self.assertEqual(len(codes), 2)
+        self.assertEqual(next(c for c in codes if c["coder_id"] == "coder_a")["code"]["evidence"], "insufficient")
+        self.assertEqual(len(self.store.validation_code_history(sample["id"], "vi_one", "coder_a")), 2)
+
     def test_failed_mutation_rolls_back_state_and_feed(self):
         s = session()
         self.store.save(s)

@@ -55,7 +55,7 @@ Review is the same transcript-first interface for integrated and external sessio
 - Finish the independent pass to lock its answers **before** seeing LLM suggestions.
 - Suggested moments are recorded separately, distinguishing noticed-at-the-time from only-now recognition. Suggestions never overwrite the independent pass.
 
-Existing legacy annotations remain preserved; they are not automatically converted into confirmed insights. Legacy model outputs remain researcher-visible but are not offered as participant suggestions; rerun the current judge for validated suggestions.
+Existing legacy annotations remain preserved; they are not automatically converted into confirmed insights. Legacy model outputs remain researcher-visible but are not offered as participant suggestions; rerun the current judge for current-format suggestions.
 
 ## LLM judge (no regex spark detector)
 
@@ -99,6 +99,18 @@ Batch judging is an explicit inference action:
 
 `--all` selects ended conversations with transcripts. No fabricated USD estimate is displayed.
 
+## Blinded judge validation
+
+Open `/validation` from the research dashboard to create a reproducible small double-coded set. Select the source sessions, two coder IDs, a sampling seed, and counts for three hidden strata:
+
+- LLM judge candidates (candidate-quality check).
+- Independently participant-confirmed passages that do not overlap a judge candidate (coverage audit).
+- Unflagged matched-length conversation passages (comparison windows, **not assumed negatives**).
+
+Each coder receives a separate tokenized link. They see the same task, baseline, transcript context, and highlighted episode, but never see the sampling stratum, model output/rationale, participant report, session/participant identity, or the other coder's answers. Codes cover transcript evidence, provisional type, uptake, boundary quality, confidence, and rationale. Every edit is versioned.
+
+The unblinded researcher view reports raw agreement and Cohen's κ, source-stratified transcript-support counts, and descriptive passage coverage of participant-confirmed episodes. It deliberately does not call model outputs ground truth, unflagged windows negatives, or passage overlap recall. Export the item-level data as CSV for analysis/adjudication. A small pilot is for codebook and workflow debugging; report uncertainty and do not treat its κ or support rate as a stable population estimate.
+
 ## External-agent recording
 
 Open `/record` in desktop Chrome/Edge. Share screen (video only), pop out the optional always-on-top Flag button, work in Codex or Claude Code, then end recording and attach selected agent logs. Video is uploaded in 4-second chunks. Screen capture requires localhost or HTTPS; macOS screen-recording permission may also be needed.
@@ -126,7 +138,7 @@ Study data is local to the execution host, **not model inference**. Codex also m
 
 **macOS execution host + localhost only for integrated agents.** Python 3.10+ is required for the Claude SDK. The macOS privacy fence protects study records and other sessions' workspaces. Sandboxing and explicit approvals do not provide full host/credential isolation. Use synthetic, non-sensitive tasks during development.
 
-Researcher/participant authentication, hosted execution isolation, quotas, resource limits, pairing/deployment hardening, multi-coder blind adjudication, and validated judge evaluation remain unfinished. UI/API-view hiding of suggestions is a study-flow safeguard, **not an authorization boundary**; researcher/export routes are currently unauthenticated. Do not expose this publicly or share a researcher's ChatGPT login as a hosted service credential.
+Researcher/participant authentication, hosted execution isolation, quotas, resource limits, pairing/deployment hardening, formal adjudication, and adequately powered judge validation remain unfinished. The local tool now supports blinded double-coding, but tokenized coder links and UI/API-view hiding are workflow safeguards, **not an authorization boundary**; researcher/export routes are currently unauthenticated. Do not expose this publicly or share a researcher's ChatGPT login as a hosted service credential.
 
 Task templates/personas are configurable in `config/`; a full factorial/counterbalanced study assignment system remains future work. Human-partner chat is a prototype comparison mode, not production participant matching.
 
@@ -166,6 +178,7 @@ claude_sdk_worker.py  isolated official SDK client with native tools/prompt
 annotations.py        participant reviews, evidence passages, locking
 judge.py              blinded LLM coding, quote/ID validation
 judge_backend.py      restricted Codex judge / optional API adapter
+judge_validation.py   blinded sampling, coder agreement, validation export
 parsers.py            external log normalization (not inference)
 transcript.py         full timestamped transcript rendering
 static/bookmarks.js   durable retry outbox and click snapshots

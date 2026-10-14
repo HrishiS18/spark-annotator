@@ -80,7 +80,7 @@ pre { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; backgroun
 .btn-ghost { border-color: transparent; background: transparent; }
 .icon-btn { border: 0; background: transparent; padding: 6px; border-radius: 8px; cursor: pointer; color: var(--text-3); display: inline-flex; }
 .icon-btn:hover { background: var(--bg-soft); color: var(--text); }
-textarea, input[type=text], select {
+textarea, input[type=text], input[type=number], select {
   width: 100%; background: var(--bg-input); border: 1px solid var(--border-strong); border-radius: 10px; padding: 10px 12px;
 }
 textarea:focus, input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 1px; }
@@ -458,6 +458,54 @@ details.box summary { cursor: pointer; font-weight: 580; }
 }
 .steps-list { padding-left: 20px; margin: 4px 0 0; display: grid; gap: 8px; font-size: 14px; }
 details.card > summary { list-style-position: outside; }
+
+/* ---------- blinded judge validation */
+.validation-shell { min-height: 100vh; background: var(--bg-side); padding-bottom: 80px; }
+.validation-head { max-width: 1120px; margin: 0 auto; padding: 28px 24px 18px; display: grid; gap: 14px; }
+.validation-head h1 { margin: 0; font-size: 26px; }
+.validation-head p { margin: 4px 0 0; }
+.validation-two { max-width: 1120px; margin: 0 auto; padding: 0 24px; display: grid; grid-template-columns: minmax(0,1.5fr) minmax(280px,1fr); gap: 18px; align-items: start; }
+.validation-setup .three { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+.validation-sessions { border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; margin: 0 0 18px; max-height: 280px; overflow: auto; }
+.validation-sessions legend { padding: 0 6px; font-size: 13px; font-weight: 600; color: var(--text-2); }
+.validation-sessions label { display: flex; gap: 10px; padding: 9px 4px; border-bottom: 1px solid var(--border); cursor: pointer; }
+.validation-sessions label:last-child { border: 0; }
+.validation-sessions input { margin-top: 4px; }
+.validation-sessions small { display: block; color: var(--text-3); }
+.validation-sample { display: grid; gap: 2px; padding: 12px 0; color: var(--text); text-decoration: none; border-bottom: 1px solid var(--border); }
+.validation-sample span { color: var(--text-3); font-size: 13px; }
+.validation-progress { position: sticky; top: 0; height: 4px; background: var(--border); z-index: 5; }
+.validation-progress span { display: block; height: 100%; background: var(--ok); transition: width .2s; }
+.validation-coder-layout { max-width: 1120px; margin: 0 auto; padding: 0 24px; display: grid; grid-template-columns: 190px minmax(0,760px); gap: 28px; align-items: start; }
+.validation-nav { position: sticky; top: 24px; display: grid; gap: 12px; }
+.validation-nav > div { display: grid; grid-template-columns: repeat(5,32px); gap: 5px; }
+.validation-nav button { width: 32px; height: 32px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--bg); cursor: pointer; }
+.validation-nav button.done { border-color: var(--ok); color: var(--ok); }
+.validation-nav button.active { background: var(--text); color: var(--bg); border-color: var(--text); }
+.validation-item { display: grid; gap: 16px; min-width: 0; }
+.eyebrow { margin: 0 0 5px; color: var(--text-3); text-transform: uppercase; letter-spacing: .08em; font-size: 11px; font-weight: 700; }
+.validation-transcript { border: 1px solid var(--border); border-radius: 14px; background: var(--bg); padding: 10px; }
+.validation-event { padding: 12px 14px; border-radius: 9px; margin: 4px 0; }
+.validation-event.context { opacity: .58; }
+.validation-event.target { background: var(--accent-soft); border: 1px solid var(--accent-ring); }
+.validation-event pre { margin: 5px 0 0; padding: 0; background: transparent; font-family: inherit; font-size: 14px; }
+.ok-text { color: var(--ok); }
+.validation-results { max-width: 980px; margin: 0 auto; padding: 0 24px; display: grid; gap: 18px; }
+.spread { justify-content: space-between; }
+.share-link { display: grid; grid-template-columns: 120px 70px minmax(0,1fr) auto; gap: 10px; align-items: center; padding: 8px 0; }
+.share-link input { min-width: 0; }
+.validation-results table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.validation-results th, .validation-results td { padding: 8px; border-bottom: 1px solid var(--border); text-align: left; }
+.validation-results th { color: var(--text-3); font-weight: 600; }
+.validation-audit { margin: 8px 0; }
+.validation-audit summary { cursor: pointer; font-weight: 600; }
+@media (max-width: 760px) {
+  .validation-two, .validation-coder-layout { grid-template-columns: 1fr; }
+  .validation-setup .three { grid-template-columns: 1fr; }
+  .validation-nav { position: static; }
+  .share-link { grid-template-columns: 1fr auto; }
+  .share-link input { grid-column: 1 / -1; }
+}
 .runtime-panel { margin: 12px 0 20px; }
 .runtime-panel p { margin: 8px 0; }
 .runtime-error { padding: 12px; border: 1px solid var(--border-strong); border-radius: 10px; color: var(--text); }

@@ -58,7 +58,17 @@ class Store:
                 CREATE INDEX IF NOT EXISTS runtime_feed_session ON runtime_feed(session_id, seq);
                 CREATE TABLE IF NOT EXISTS migrations (
                     path TEXT PRIMARY KEY, checksum TEXT NOT NULL, session_id TEXT NOT NULL);
-                PRAGMA user_version=1;
+                CREATE TABLE IF NOT EXISTS validation_samples (
+                    id TEXT PRIMARY KEY, created_t REAL NOT NULL, document TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS validation_codes (
+                    sample_id TEXT NOT NULL REFERENCES validation_samples(id),
+                    item_id TEXT NOT NULL, coder_id TEXT NOT NULL, updated_t REAL NOT NULL,
+                    document TEXT NOT NULL, PRIMARY KEY(sample_id, item_id, coder_id));
+                CREATE TABLE IF NOT EXISTS validation_code_versions (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT, sample_id TEXT NOT NULL,
+                    item_id TEXT NOT NULL, coder_id TEXT NOT NULL, recorded_t REAL NOT NULL,
+                    document TEXT NOT NULL);
+                PRAGMA user_version=2;
             """)
 
     @contextmanager
@@ -226,6 +236,55 @@ class Store:
                                    "notification": json.loads(r["document"])} for r in db.execute(
                 "SELECT * FROM runtime_feed WHERE session_id=? ORDER BY seq", (sid,))]
             return s
+
+    # Validation sets intentionally live outside participant sessions: their
+    # hidden sampling stratum and model labels must never leak into coder views.
+    def create_validation_sample(self, sample):
+        with self.write_lock, self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO validation_samples VALUES(?,?,?)",
+                       (sample["id"], sample["created_t"], encode(sample)))
+
+    def validation_samples(self):
+        with self.connect() as db:
+            return [(json.loads(r["document"]), self._validation_codes(db, r["id"])) for r in db.execute(
+                "SELECT * FROM validation_samples ORDER BY created_t DESC")]
+
+    def validation_sample(self, sample_id):
+        with self.connect() as db:
+            row = db.execute("SELECT document FROM validation_samples WHERE id=?", (sample_id,)).fetchone()
+            if not row:
+                raise KeyError(sample_id)
+            return json.loads(row[0]), self._validation_codes(db, sample_id)
+
+    def _validation_codes(self, db, sample_id):
+        return [{"sample_id": r["sample_id"], "item_id": r["item_id"], "coder_id": r["coder_id"],
+                 "updated_t": r["updated_t"], "code": json.loads(r["document"])} for r in db.execute(
+            "SELECT * FROM validation_codes WHERE sample_id=? ORDER BY item_id,coder_id", (sample_id,))]
+
+    def save_validation_code(self, sample_id, item_id, coder_id, code):
+        value, at = encode(code), time.time()
+        with self.write_lock, self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not db.execute("SELECT 1 FROM validation_samples WHERE id=?", (sample_id,)).fetchone():
+                raise KeyError(sample_id)
+            old = db.execute("SELECT document FROM validation_codes WHERE sample_id=? AND item_id=? AND coder_id=?",
+                             (sample_id, item_id, coder_id)).fetchone()
+            if not old or old[0] != value:
+                db.execute("INSERT INTO validation_code_versions(sample_id,item_id,coder_id,recorded_t,document) VALUES(?,?,?,?,?)",
+                           (sample_id, item_id, coder_id, at, value))
+            db.execute("""INSERT INTO validation_codes VALUES(?,?,?,?,?)
+                          ON CONFLICT(sample_id,item_id,coder_id) DO UPDATE SET
+                          updated_t=excluded.updated_t,document=excluded.document""",
+                       (sample_id, item_id, coder_id, at, value))
+        return {"sample_id": sample_id, "item_id": item_id, "coder_id": coder_id,
+                "updated_t": at, "code": code}
+
+    def validation_code_history(self, sample_id, item_id, coder_id):
+        with self.connect() as db:
+            return [{"recorded_t": r["recorded_t"], "code": json.loads(r["document"])} for r in db.execute(
+                "SELECT * FROM validation_code_versions WHERE sample_id=? AND item_id=? AND coder_id=? ORDER BY seq",
+                (sample_id, item_id, coder_id))]
 
     def migrate_legacy(self, directory):
         count = 0

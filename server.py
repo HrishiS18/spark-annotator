@@ -30,6 +30,7 @@ import parsers
 import transcript
 import storage
 import annotations
+import judge_validation
 from codex_runtime import RuntimeUnavailable
 from agent_runtime import RuntimeManager, AGENT_KINDS
 
@@ -690,7 +691,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _dispatch(self, method, parts, query):
         pages = {"": "index.html", "session": "session.html", "researcher": "researcher.html", "review": "review.html",
-                 "record": "record.html"}
+                 "record": "record.html", "validation": "validation.html"}
         if method == "GET" and (not parts or (len(parts) == 1 and parts[0] in pages)):
             return self._static(pages["" if not parts else parts[0]])
         if parts and parts[0] == "static":
@@ -734,6 +735,48 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, marks_csv(), "text/csv", {"Content-Disposition": "attachment; filename=marks.csv"})
             if api[1:] == ["candidates.csv"]:
                 return self._send(200, candidates_csv(), "text/csv", {"Content-Disposition": "attachment; filename=candidates.csv"})
+
+        if api == ["validations"]:
+            if method == "GET":
+                return self._send(200, [judge_validation.list_row(sample, codes)
+                                       for sample, codes in get_store().validation_samples()])
+            if method == "POST":
+                body = self._json()
+                session_ids = list(dict.fromkeys(body.get("session_ids") or []))
+                if not session_ids or any(not re.fullmatch(r"s_[0-9a-f]{8}", sid or "") for sid in session_ids):
+                    raise ValueError("Select one or more valid sessions")
+                sample = judge_validation.create_sample([load(sid) for sid in session_ids], body,
+                                                        [t["key"] for t in TAXONOMY["types"]])
+                get_store().create_validation_sample(sample)
+                return self._send(201, {
+                    **judge_validation.list_row(sample, []),
+                    "coder_links": [{"id": c["id"], "name": c["name"], "token": c["token"]}
+                                    for c in sample["coders"]],
+                })
+        if len(api) >= 2 and api[0] == "validations":
+            validation_id, rest = api[1], api[2:]
+            if not re.fullmatch(r"vs_[0-9a-f]{12}", validation_id or ""):
+                raise KeyError(validation_id)
+            sample, codes = get_store().validation_sample(validation_id)
+            token = (query.get("token") or [""])[0]
+            if method == "GET" and not rest:
+                if token:
+                    return self._send(200, judge_validation.coder_view(sample, codes, token))
+                if (query.get("view") or [""])[0] != "researcher":
+                    raise ValueError("A coder token or researcher view is required")
+                result = judge_validation.results(sample, codes)
+                result["coder_links"] = [{"id": c["id"], "name": c["name"], "token": c["token"]}
+                                         for c in sample["coders"]]
+                return self._send(200, result)
+            if method == "GET" and rest == ["export.csv"]:
+                return self._send(200, judge_validation.export_csv(sample, codes), "text/csv",
+                                  {"Content-Disposition": f"attachment; filename={validation_id}.csv"})
+            if method == "POST" and rest == ["codes"]:
+                body = self._json()
+                coder_id, item_id, code = judge_validation.validate_code(sample, token, body)
+                saved = get_store().save_validation_code(validation_id, item_id, coder_id, code)
+                return self._send(200, saved)
+            return self._send(404, {"error": "not found"})
 
         if len(api) >= 2 and api[0] == "sessions":
             sid = api[1]

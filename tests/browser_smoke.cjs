@@ -263,8 +263,37 @@ const assert = require('node:assert/strict');
     await failed.p.locator('#retry-judge').click();
     await failed.p.locator('[data-judge-status=done]').waitFor();
     assert.equal((await (await fetch(base+'/api/sessions/'+failed.s.id+'?view=researcher')).json()).analysis_runs.length,2);
+    // A validation set must keep source/model/participant annotations blind to
+    // both coders, persist their answers separately, then unblind researcher results.
+    const validation = await request('/api/validations',{name:'Synthetic blinded validation',session_ids:[sid],
+      candidate_n:1,report_n:0,control_n:0,seed:'browser-fixed',coder_a:'Coder A',coder_b:'Coder B'});
+    assert.equal(validation.items,1);
+    for (const coder of validation.coder_links) {
+      const coderPage=await context.newPage(); coderPage.setDefaultTimeout(15000); coderPage.on('pageerror',err=>errors.push(err.message));
+      await coderPage.goto(base+`/validation?sample=${validation.id}&token=${encodeURIComponent(coder.token)}`);
+      await coderPage.locator('#validation-code').waitFor();
+      const coderText=await coderPage.locator('body').textContent();
+      assert(!coderText.includes('judge candidate')); assert(!coderText.includes('SYNTHETIC_TEST_SUGGESTION'));
+      await coderPage.locator('[name=evidence]').selectOption('possible');
+      await coderPage.locator('[name=primary_type]').selectOption('additive');
+      await coderPage.locator('[name=uptake]').selectOption('unclear');
+      await coderPage.locator('[name=span_quality]').selectOption('adequate');
+      await coderPage.locator('[name=confidence]').selectOption('medium');
+      await coderPage.locator('#validation-code button').click();
+      await coderPage.waitForFunction(()=>document.querySelector('.validation-nav')?.textContent.includes('1/1 saved'));
+      const blinded=await (await fetch(base+`/api/validations/${validation.id}?token=${encodeURIComponent(coder.token)}`)).json();
+      assert(!JSON.stringify(blinded).includes('stratum')); assert.equal(Object.keys(blinded.codes).length,1);
+      await coderPage.close();
+    }
+    const resultsPage=await context.newPage(); resultsPage.setDefaultTimeout(15000); resultsPage.on('pageerror',err=>errors.push(err.message));
+    await resultsPage.goto(base+`/validation?sample=${validation.id}&view=results`);
+    await resultsPage.getByText('Inter-coder agreement',{exact:true}).waitFor();
+    const validationResult=await (await fetch(base+`/api/validations/${validation.id}?view=researcher`)).json();
+    assert.equal(validationResult.complete_items,1); assert.equal(validationResult.agreement.evidence.cohen_kappa,1);
+    assert(JSON.stringify(validationResult).includes('judge_candidate'));
+    await resultsPage.screenshot({path:path.join(data,'judge-validation.png'),fullPage:true});
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ passed: true, tests: ['create','stream','approval','tools','upload','artifact','offline bookmark recovery','exposure snapshot','lost save ACK','multi-tab conflict','draft autosave recovery','multi-event passage','missed moment','automatic judging','no duplicate calls on refresh','independent blinding','retrospective suggestion','final locking','export'],
+    console.log(JSON.stringify({ passed: true, tests: ['create','stream','approval','tools','upload','artifact','offline bookmark recovery','exposure snapshot','lost save ACK','multi-tab conflict','draft autosave recovery','multi-event passage','missed moment','automatic judging','no duplicate calls on refresh','independent blinding','retrospective suggestion','final locking','export','blinded double-coder validation'],
       status_tests:['missing transcript','completed empty result','failed result and user retry'],screenshot: path.join(data, 'spark-review.png') }));
   } finally {
     if (browser) await browser.close();

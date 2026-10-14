@@ -110,6 +110,41 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(exported["marks"][0]["event_id"], assistant["id"])
         self.assertEqual(exported["runtime"]["last_turn_status"], "interrupted")
 
+    def test_blinded_double_coded_judge_validation_api(self):
+        self.create()
+        with server.LOCK:
+            s = self.store.load(self.sid)
+            s["events"] = [
+                {"id":"ev_v1","role":"user","text":"I favor option A.","t":1,"meta":{}},
+                {"id":"ev_v2","role":"assistant","text":"What if the affected person cannot appeal?","t":2,"meta":{}},
+                {"id":"ev_v3","role":"user","text":"That changes how I see the fairness issue.","t":3,"meta":{}},
+                {"id":"ev_v4","role":"assistant","text":"What follows?","t":4,"meta":{}},
+                {"id":"ev_v5","role":"user","text":"I would add a review path.","t":5,"meta":{}},
+            ]
+            s["candidates"] = [{"id":"c_private","source":"judge","start_event_id":"ev_v2","end_event_id":"ev_v3",
+                "trigger_event_id":"ev_v2","type":"counterfactual","secondary_type":"none","insight_evidence":"expressed",
+                "uptake":"observed","persuasion":"not_observed","copying":"not_observed","strength":"high",
+                "rationale":"PRIVATE_MODEL_LABEL"}]
+            self.store.save(s)
+        code, created = self.request("/api/validations", {"name":"API pilot","session_ids":[self.sid],
+            "candidate_n":1,"report_n":0,"control_n":0,"seed":"fixed","coder_a":"A","coder_b":"B"}, "POST")
+        self.assertEqual(code, 201)
+        self.assertEqual(created["items"], 1)
+        vid, links = created["id"], created["coder_links"]
+        code, blinded = self.request(f"/api/validations/{vid}?token={links[0]['token']}")
+        self.assertEqual(code, 200)
+        self.assertNotIn("PRIVATE_MODEL_LABEL", repr(blinded))
+        self.assertNotIn("stratum", repr(blinded))
+        payload = {"item_id":blinded["items"][0]["id"],"evidence":"expressed","primary_type":"counterfactual",
+                   "uptake":"observed","span_quality":"adequate","confidence":"high","notes":"clear"}
+        for link in links:
+            self.assertEqual(self.request(f"/api/validations/{vid}/codes?token={link['token']}", payload, "POST")[0], 200)
+        code, result = self.request(f"/api/validations/{vid}?view=researcher")
+        self.assertEqual(code, 200)
+        self.assertEqual(result["complete_items"], 1)
+        self.assertEqual(result["agreement"]["evidence"]["cohen_kappa"], 1.0)
+        self.assertIn("PRIVATE_MODEL_LABEL", repr(result))
+
     def test_cross_origin_and_rebinding_requests_are_rejected(self):
         self.assertEqual(self.request("/api/config", headers={"Origin": "https://attacker.example"})[0], 403)
         self.assertEqual(self.request("/api/config", headers={"Host": "attacker.example"})[0], 403)
