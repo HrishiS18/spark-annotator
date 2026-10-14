@@ -4,7 +4,14 @@ const form = $("#start");
 const button = form.querySelector('button[type="submit"]');
 const status = $("#runtime-status");
 const permissionNote = $("#permission-note");
+const claudeSetup = $("#claude-setup");
 let starting = false;
+
+function modelLabel(model) {
+  if (!model) return "Study model";
+  if (model === "TEST ONLY") return "Test model";
+  return model === "sonnet" ? "Sonnet" : model === "opus" ? "Opus" : model === "haiku" ? "Haiku" : model;
+}
 
 function notice(text, error = false) {
   status.textContent = text;
@@ -20,16 +27,19 @@ async function setup() {
   form.persona.innerHTML = cfg.personas.map(persona => `<option value="${esc(persona.key)}">${esc(persona.label)}</option>`).join("");
 
   function syncRuntime() {
-    if (form.condition.value === "human") {
+    const human = form.condition.value === "human";
+    const claude = !human && form.runtime.value === "claude";
+    document.body.dataset.agent = human ? "human" : form.runtime.value;
+    claudeSetup.classList.toggle("hidden", !claude);
+    if (claude) $("#claude-setup-model").textContent = modelLabel(cfg.runtimes?.claude?.model);
+    if (human) {
       permissionNote.textContent = "";
       permissionNote.classList.add("hidden");
       notice(""); button.disabled = starting; return;
     }
     const kind = form.runtime.value;
-    permissionNote.classList.remove("hidden");
-    permissionNote.textContent = kind === "codex"
-      ? "Agent access: routine reading, editing, and commands inside the task workspace run without interruption. Codex asks before crossing that boundary."
-      : "Agent access: reading and editing inside the task workspace run without interruption. Claude may ask before commands or network access.";
+    permissionNote.classList.toggle("hidden", claude);
+    permissionNote.textContent = claude ? "" : "Agent access: routine reading, editing, and commands inside the task workspace run without interruption. Codex asks before crossing that boundary.";
     const runtime = cfg.runtimes?.[kind] || (kind === "codex" ? cfg.runtime : null);
     let message = "";
     if (!runtime?.installed) {

@@ -27,10 +27,20 @@
       </label>
       <label class="field" id="runtime-field"><span>Agent</span><select name="runtime">
         <option value="codex">Codex</option>
-        <option value="claude">Claude agent</option>
+        <option value="claude">Claude Code</option>
       </select></label>
     </div>
     <p class="permission-note" id="permission-note"></p>
+    <section class="claude-setup hidden" id="claude-setup" aria-label="Claude Code session setup">
+      <div class="claude-setup-heading"><span class="claude-mark" aria-hidden="true">✳</span><strong>Claude Code</strong><span>Study setup</span></div>
+      <div class="claude-setup-grid">
+        <div><small>Environment</small><strong>Local study server</strong></div>
+        <div><small>Project folder</small><strong>Task workspace</strong></div>
+        <div><small>Model</small><strong id="claude-setup-model">Sonnet</strong></div>
+        <div><small>Permission mode</small><strong>Accept edits</strong></div>
+      </div>
+      <p>These settings are fixed for this study. Claude can read and edit task files; commands and network tools ask first.</p>
+    </section>
     <label class="field hidden" id="room-field"><span>Room code</span><input type="text" name="room" placeholder="e.g. BLUE7"><small>Both participants use the same code.</small></label>
     <details class="home-settings">
       <summary>Session settings</summary>

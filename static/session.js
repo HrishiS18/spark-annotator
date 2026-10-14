@@ -14,7 +14,8 @@ let pendingMessage = null;
 let workspaceRefresh = null;
 let bookmarkOutbox = null;
 const isAgentRuntime = () => ["codex","claude"].includes(S.runtime?.kind);
-const agentName = () => S.runtime?.kind === "claude" ? "Claude agent" : "Codex";
+const agentName = () => S.runtime?.kind === "claude" ? "Claude" : "Codex";
+const modelLabel = (model) => !model ? "Study model" : model === "sonnet" ? "Sonnet" : model === "opus" ? "Opus" : model === "haiku" ? "Haiku" : model === "TEST ONLY" ? "Test model" : model;
 const PHASE_LABEL = { pre: "Before", chat: "Conversation", post: "After", review: "Review", done: "Done" };
 const CHAT_ROLES = ["user", "assistant", "partner"];
 
@@ -32,7 +33,9 @@ async function load() {
 // ------------------------------------------------------------------ shell
 
 function renderShell() {
-  $("#brand").innerHTML = `${icon("chat")}<span>Task session</span>`;
+  const claude = S.runtime?.kind === "claude";
+  document.body.dataset.agent = S.runtime?.kind || "human";
+  $("#brand").innerHTML = claude ? `<span class="claude-mark" aria-hidden="true">✳</span><span>Claude Code <small>study session</small></span>` : `${icon("chat")}<span>Task session</span>`;
   $("#top-ic").innerHTML = icon("chat");
   $("#top-title").textContent = S.prompt.title;
   $("#fab-ic").innerHTML = icon("bulb");
@@ -79,6 +82,8 @@ function route() {
   banner("");
   renderSteps();
   $("#composer-wrap").classList.add("hidden");
+  $("#composer-context").classList.add("hidden");
+  $("#add-file").classList.add("hidden");
   $("#fab").classList.add("hidden");
   $("#top-actions").innerHTML = "";
   $("#top-runtime").innerHTML = "";
@@ -164,14 +169,21 @@ function renderThread() {
 function scrollBottom() { const c = $("#content"); c.scrollTop = c.scrollHeight; }
 
 function chatView() {
+  const claude = S.runtime?.kind === "claude";
   $("#content").innerHTML = `<div class="narrow"><p class="instructions small">${esc(study.chat_instructions)}</p>
     <div class="runtime-panel" id="runtime-panel"></div><div id="approvals"></div>
-    ${isAgentRuntime() ? `<details class="workspace-panel"><summary>Task files</summary>
+    ${isAgentRuntime() ? `<details class="workspace-panel"><summary>${claude ? "Project files" : "Task files"}</summary>
       <p class="small muted">These files are saved on the Mac running the server and shared with the agent. Existing files are never overwritten.</p>
       <label class="btn btn-sm">${icon("upload")} Add task file<input id="workspace-upload" type="file" hidden></label>
       <button class="btn btn-sm btn-ghost" id="refresh-files">Refresh files</button><div id="workspace-files"></div><pre id="file-preview" class="hidden"></pre></details>` : ""}
     <div class="thread" id="thread"></div><div id="typing"></div></div>`;
   $("#composer-wrap").classList.remove("hidden");
+  if (claude) {
+    $("#add-file").classList.remove("hidden");
+    $("#add-file").onclick = () => $("#workspace-upload").click();
+    $("#composer-context").innerHTML = `<span>Local study server</span><span>Task workspace</span><span>${esc(modelLabel(S.runtime?.requested_model || S.runtime?.model))}</span><span>Accept edits · commands ask</span>`;
+    $("#composer-context").classList.remove("hidden");
+  }
   $("#fab").classList.remove("hidden");
   if (!bookmarkOutbox) bookmarkOutbox = new BookmarkOutbox(sid, (pending, mark) => {
     if (mark) {
@@ -243,6 +255,7 @@ function renderRuntime() {
   $("#connect-agent").disabled = active || connecting;
   $("#connect-agent").classList.toggle("hidden", runtime.status === "ready" && !runtime.error);
   $("#workspace-upload").disabled = active || connecting;
+  $("#add-file").disabled = active || connecting;
   const approvals = runtime.approvals || [];
   const questionDrafts = new Map($$('[data-approval]').map(card=>[card.dataset.approval,
     Object.fromEntries($$('[data-answer]',card).map(input=>[input.dataset.answer,input.value]))]));

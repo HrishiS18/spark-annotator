@@ -24,9 +24,11 @@
     <div class="content" id="content"></div>
     <div class="composer-wrap hidden" id="composer-wrap">
       <form class="composer" id="composer">
+        <button class="composer-add hidden" type="button" id="add-file" title="Add task file" aria-label="Add task file">+</button>
         <textarea id="input" rows="1" placeholder="Ask a follow-up…" aria-label="Message"></textarea>
         <button class="btn btn-primary btn-sm" type="submit" id="send">Send</button>
       </form>
+      <div class="composer-context hidden" id="composer-context" aria-label="Claude Code session settings"></div>
       <div class="hint"><span><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span><kbd>Ctrl</kbd>+<kbd>M</kbd> mark moment</span></div>
     </div>
   </main>
