@@ -288,7 +288,7 @@ class ServerTests(unittest.TestCase):
         inference.assert_not_called()
         self.assertEqual(self.store.load(self.sid)["judge"]["status"],"error")
 
-    def test_automatic_judge_after_conversation_deduplicates_refresh_and_waits_before_finish(self):
+    def test_automatic_judge_after_conversation_deduplicates_refresh_and_allows_optional_skip(self):
         self.create()
         with server.LOCK:
             s = self.store.load(self.sid); server.add_event(s,"assistant","Synthetic suggestion."); self.store.save(s)
@@ -305,7 +305,8 @@ class ServerTests(unittest.TestCase):
                 self.request(self.prefix+"/advance",{"phase":"post","text":"Final position"},"POST")
                 self.assertEqual(self.request(self.prefix)[1]["candidates"],[])
                 self.request(self.prefix+"/review/complete-independent",{},"POST")
-                self.assertEqual(self.request(self.prefix+"/advance",{"phase":"review"},"POST")[0],400)
+                self.assertEqual(self.request(self.prefix+"/advance",{"phase":"review"},"POST")[0],200)
+                self.assertEqual(self.store.load(self.sid)["phase"],"done")
             finally:
                 release.set()
             saved = self.wait_judge()

@@ -300,6 +300,7 @@ mark.q { background: var(--accent-soft); color: inherit; border-bottom: 2px soli
 .home-settings[open] summary { margin-bottom: 20px; }
 .home-settings p { margin: 0; }
 .home-status { margin: 0 0 16px; color: var(--text-2); line-height: 1.6; }
+.home-complete { margin: 0 0 24px; padding: 11px 14px; border: 1px solid var(--border); border-left: 3px solid var(--ok); border-radius: 8px; background: var(--bg-side); font-size: 13.5px; }
 .permission-note { margin: -4px 0 18px; padding: 10px 12px; border-left: 2px solid var(--border-strong); color: var(--text-2); background: var(--bg-side); font-size: 12.5px; line-height: 1.5; }
 .claude-mark { color: #ca7154; font-size: 20px; line-height: 1; flex: none; }
 .side-brand .claude-mark { font-size: 19px; }
@@ -422,6 +423,10 @@ details.box summary { cursor: pointer; font-weight: 580; }
 .rv-left { display: flex; flex-direction: column; min-height: 0; padding: 16px 18px 0 22px; gap: 10px; }
 .rv-right { border-left: 1px solid var(--border); overflow-y: auto; padding: 16px 18px 60px; background: var(--bg-side); }
 .player { background: #0d0d0c; border-radius: 12px; overflow: hidden; aspect-ratio: 16 / 9; max-height: 56vh; display: grid; place-items: center; }
+.review-next { margin: 0 0 24px; padding: 15px; border: 1px solid var(--border); border-radius: 11px; background: var(--bg); }
+.review-next h2 { font-size: 16px; margin: 0 0 6px; }
+.review-next p { margin: 0 0 13px; color: var(--text-2); font-size: 13px; }
+.review-card.read-only .flag-head .muted::after { content: " · read-only"; }
 .player video { width: 100%; height: 100%; object-fit: contain; background: #0d0d0c; }
 .player-empty { color: #b9b4aa; text-align: center; padding: 30px; display: grid; gap: 10px; justify-items: center; max-width: 420px; font-size: 14px; }
 .track-wrap { padding: 4px 0 0; }

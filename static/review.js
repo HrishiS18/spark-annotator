@@ -12,6 +12,7 @@ const point = m => m.reference_t ?? m.t;
 const offset = t => t == null ? 0 : t - t0;
 const independentDone = () => !!S.independent_review;
 const judgeBusy = () => ['queued','running'].includes(S.judge?.status);
+const showsSuggestions = () => S.config_snapshot?.study?.show_candidates_in_review ?? cfg.studies.find(study => study.key === S.study)?.show_candidates_in_review;
 const liveMarks = () => S.marks.filter(m => !m.deleted);
 const label = e => ({ user: 'You', assistant: S.runtime?.kind === 'codex' ? 'Codex' : S.runtime?.kind === 'claude' ? 'Claude agent' : 'Agent', partner: 'Partner', tool_call: 'Tool call', tool_result: 'Tool output' }[e.role] || e.role);
 
@@ -32,16 +33,30 @@ async function prepareSuggestions() {
 function renderHeader() {
   $('#brand').innerHTML = `${icon('bulb')}<span>Spark review</span>`;
   $('#title').textContent = S.prompt.title;
-  $('#meta').textContent = researcher ? 'Researcher view' : independentDone() ? 'Independent review locked' : 'Independent review · model suggestions hidden';
+  $('#meta').textContent = researcher ? 'Researcher view' : S.phase === 'done' ? 'Session complete' : independentDone() ? 'Independent review saved' : 'Independent review · model suggestions hidden';
   $('#actions').innerHTML = researcher
     ? `<button class="btn btn-sm" id="run-judge" ${cfg.judge.live && !judgeBusy() ? '' : 'disabled'}>Re-run LLM judge</button><a class="btn btn-sm" href="/api/sessions/${sid}/export.json">Export</a><a class="btn btn-sm" href="/researcher#${sid}">Dashboard</a>`
-    : S.phase === 'review' ? `<button class="btn btn-primary btn-sm" id="finish" ${finishing || independentDone() && judgeBusy() ? 'disabled' : ''}>${independentDone() ? judgeBusy() ? 'Preparing suggested moments…' : 'Finish session' : 'Finish independent review'}</button>` : '';
+    : S.phase === 'review' ? `<button class="btn btn-primary btn-sm" id="finish" ${finishing ? 'disabled' : ''}>${independentDone() ? 'Finish and return home' : 'Finish independent review'}</button>`
+    : `<a class="btn btn-sm" href="/">Return home</a>`;
   if ($('#finish')) $('#finish').onclick = finish;
   if ($('#run-judge')) $('#run-judge').onclick = async () => {
     if (!confirm('Send this session’s transcript and baseline to the LLM judge? Participant bookmarks and reviews are excluded.')) return;
     try { await api('POST', `/api/sessions/${sid}/judge`, {}); toast('LLM judge started'); await load(); renderSuggestions(); }
     catch (error) { toast(error.message); }
   };
+}
+function renderNext() {
+  const box = $('#review-next');
+  if (researcher || !independentDone()) { box.innerHTML = ''; return; }
+  if (S.phase === 'done') {
+    box.innerHTML = `<div class="review-next"><h2>Session complete</h2><p>Your responses are saved. Thank you for taking part.</p><a class="btn btn-primary btn-sm" href="/">Return home</a></div>`;
+    return;
+  }
+  const showingSuggestions = showsSuggestions();
+  box.innerHTML = `<div class="review-next"><h2>Independent review saved</h2>
+    <p>Your answers are locked so later suggestions cannot change them. ${showingSuggestions ? 'Suggested moments below are optional. Review any that appear, or finish now.' : 'You can now finish the session.'}</p>
+    <button class="btn btn-primary btn-sm" id="finish-inline">Finish and return home</button></div>`;
+  $('#finish-inline').onclick = finish;
 }
 
 function renderPlayer() {
@@ -102,7 +117,7 @@ function renderMoments() {
       onSaved: m => { replace(m); updateIntro(); renderTrack(); }, onChanged: m => { m.review_dirty = true; replace(m); updateIntro(); } });
     forms.set(mark.id, form);
   }
-  if (!openId && liveMarks().length) openMoment(liveMarks().find(m => !m.review)?.id || liveMarks()[0].id);
+  if (!openId && liveMarks().length && !independentDone()) openMoment(liveMarks().find(m => !m.review)?.id || liveMarks()[0].id);
   let add = $('#add-moment');
   if (!add && !researcher && !independentDone()) { add = document.createElement('button'); add.id = 'add-moment'; add.className = 'btn btn-sm'; add.textContent = 'Add a missed moment'; add.onclick = () => addMoment(null); $('#flags').after(add); }
   if (add) add.classList.toggle('hidden', independentDone());
@@ -131,17 +146,25 @@ async function finish() {
       if (!confirm('Finish your independent review? These answers will be locked before you see model suggestions.')) return;
       await api('POST', `/api/sessions/${sid}/review/complete-independent`, {}); await load();
       for (const id of S.independent_review.mark_ids) forms.get(id)?.lock();
-      renderHeader(); renderTranscript(); renderMoments(); renderSuggestions();
+      openMoment(null);
+      if (!showsSuggestions()) {
+        await completeSession(); return;
+      }
+      renderHeader(); renderNext(); renderTranscript(); renderMoments(); renderSuggestions();
     } else {
       if (liveMarks().some(m => m.source === 'candidate_confirm' && (m.review_dirty || m.review?.status !== 'submitted'))) throw new Error('Confirm the suggested moments you added before finishing.');
-      await api('POST', `/api/sessions/${sid}/advance`, { phase: 'review' }); await load(); forms.forEach(f => f.lock()); renderHeader(); renderSuggestions(); toast('Review complete — thank you');
+      await completeSession();
     }
   } catch (error) { toast(error.message); }
   finally { finishing = false; renderHeader(); }
 }
+async function completeSession() {
+  await api('POST', `/api/sessions/${sid}/advance`, { phase: 'review' });
+  location.assign('/?completed=1');
+}
 function renderSuggestions() {
   const box = $('#suggestions');
-  if (!researcher && (S.phase === 'done' || !cfg.studies.find(study => study.key === S.study)?.show_candidates_in_review)) { box.innerHTML = ''; return; }
+  if (!researcher && (S.phase === 'done' || !showsSuggestions())) { box.innerHTML = ''; return; }
   if (!researcher && !independentDone()) { box.innerHTML = `<p class="small muted suggestion-lock">${cfg.judge.automatic && S.runtime?.kind !== 'demo' ? 'Suggested moments are prepared automatically in the background. ' : ''}They stay hidden until your independent review is complete.</p>`; return; }
   const candidates = S.candidates.filter(c => c.source === 'judge' && !c.participant_response && (researcher ||
     ['expressed','possible'].includes(c.insight_evidence) && c.quotes_verified && c.start_event_id && c.end_event_id));
@@ -172,6 +195,6 @@ function renderSuggestions() {
 }
 cfg = await config(); await load(); outbox = new BookmarkOutbox(sid, () => {}); await outbox.flush(); await load();
 try { await prepareSuggestions(); } catch (error) { toast('Could not start suggestion generation: ' + error.message); }
-renderHeader(); renderPlayer(); renderTrack(); $('#show-tools').checked = true; renderTranscript(); renderMoments(); renderSuggestions();
+renderHeader(); renderPlayer(); renderTrack(); $('#show-tools').checked = true; renderTranscript(); renderMoments(); renderNext(); renderSuggestions();
 $('#show-tools').onchange = renderTranscript;
-setInterval(async () => { try { await load(); await prepareSuggestions(); renderHeader(); renderMoments(); renderSuggestions(); } catch {} }, 3000);
+setInterval(async () => { try { await load(); await prepareSuggestions(); renderHeader(); renderMoments(); renderNext(); renderSuggestions(); } catch {} }, 3000);

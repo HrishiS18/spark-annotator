@@ -175,7 +175,7 @@ export function wireAnnotationForm(root, m, { sid, events, locked = false, onSav
     needsSave: () => !locked && (blocked || !!operation || dirty),
     selectPassage(a, b = a) { if (locked) return; start = a; end = b; $('[data-start]', root).value = a; $('[data-end]', root).value = b; changed(); context(); },
     startId: () => start,
-    lock() { locked = true; clearTimeout(timer); $$('.annot button,.annot input,.annot textarea,.annot select', root).forEach(n => n.disabled = true); status('Review locked'); },
+    lock() { locked = true; clearTimeout(timer); root.closest('.review-card')?.classList.add('read-only'); $$('.annot button,.annot input,.annot textarea,.annot select', root).forEach(n => n.disabled = true); status('Review locked'); },
     dispose() { clearTimeout(timer); controllers.delete(controller); }
   };
   controllers.add(controller); context(); paint();

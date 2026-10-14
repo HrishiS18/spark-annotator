@@ -168,8 +168,6 @@ def advance(s, phase, text=None):
     if phase == "review":
         if not s.get("independent_review"):
             raise ValueError("Complete independent review first")
-        if (s.get("judge") or {}).get("status") in ("queued", "running"):
-            raise ValueError("Suggested moments are still being prepared. Wait before finishing.")
         if any(m.get("source") == "candidate_confirm" and not m.get("deleted") and
                (m.get("review_dirty") or (m.get("review") or {}).get("status") != "submitted") for m in s["marks"]):
             raise ValueError("Confirm the suggested moments you added before finishing")

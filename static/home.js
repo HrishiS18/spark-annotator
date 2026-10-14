@@ -6,6 +6,7 @@ const status = $("#runtime-status");
 const permissionNote = $("#permission-note");
 const claudeSetup = $("#claude-setup");
 let starting = false;
+if (new URLSearchParams(location.search).has("completed")) $("#home-complete").classList.remove("hidden");
 
 function modelLabel(model) {
   if (!model) return "Study model";
