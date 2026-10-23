@@ -5,14 +5,14 @@
 //   recording        MediaRecorder, uploaded to the server in 4 s chunks as it records
 //   floating button  Document Picture-in-Picture (Chrome / Edge 116+ on Windows, macOS,
 //                    Linux, ChromeOS); other browsers get a small popup window instead
-import { api, icon, esc, $, $$, config, toast, TYPE_COLOR, fmtClock } from "/static/common.js";
+import { api, icon, esc, $, $$, toast, fmtClock } from "/static/common.js";
 import { BookmarkOutbox } from "/static/bookmarks.js";
 
 const params = new URLSearchParams(location.search);
-let cfg, S = null;
+let S = null;
 let stream = null, recorder = null, mime = "", t0 = null, seq = 0;
 let uploadChain = Promise.resolve(), uploadedBytes = 0, uploadErrors = 0;
-let flags = [], lastFlag = null, pip = null, collapseTimer = null, sessionStart = null, finishing = false;
+let flags = [], lastFlag = null, pip = null, sessionStart = null, finishing = false;
 let bookmarkOutbox = null;
 
 const support = {
@@ -40,7 +40,7 @@ function setupView() {
   ];
   const resume = S?.recording?.status === "recording";
   $("#view").innerHTML = `
-    <p class="muted" style="margin-top:4px">While you work with your AI agent, this page records your screen (video only, no sound) and gives you a small <b>Flag</b> button that floats on top of your other windows. Press it whenever something shifts your thinking; you can say what kind of moment it was, or just bookmark it and explain later.</p>
+    <p class="muted" style="margin-top:4px">While you work with your AI agent, this page records your screen (video only, no sound) and gives you a small <b>Flag</b> button that floats on top of your other windows. Press it when something feels worth revisiting; you can explain it after the session.</p>
     <div class="card">
       <h2>Before you start</h2>
       ${rows.map(([k, ok, why]) => `<div class="check-row ${ok ? "ok" : "bad"}">${icon(ok ? "check" : "x")}<b>${k}</b>${ok ? "" : `<span class="muted small">${why}</span>`}</div>`).join("")}
@@ -171,18 +171,14 @@ function paintStatus() {
   $("#rec-up") && ($("#rec-up").textContent = `${(uploadedBytes / 1e6).toFixed(1)} MB saved${uploadErrors ? " · retrying upload…" : ""}`);
   $("#count-here") && ($("#count-here").textContent = live().length);
   pip && $(".pip-time", pip.document) && ($(".pip-time", pip.document).textContent = t);
-  if (pip && lastFlag && $(".pip-head-t", pip.document)) $(".pip-head-t", pip.document).textContent =
-    `${lastFlag.synced ? 'Saved' : bookmarkOutbox?.storageAvailable ? 'On this device · syncing' : 'Syncing · keep this tab open'} at ${fmtClock(lastFlag.t - t0)} ·`;
   const list = $("#flag-list");
-  if (list) list.innerHTML = live().slice().reverse().map((f) => {
-    const ty = cfg.taxonomy.types.find((x) => x.key === f.type);
-    return `<div class="small"><code>${fmtClock(f.t - t0)}</code> · ${ty ? `<span style="color:${TYPE_COLOR[ty.key]}">${esc(ty.label)}</span>` : "bookmarked"}${f.synced ? "" : " <span class='muted'>(saving…)</span>"}</div>`;
-  }).join("");
+  if (list) list.innerHTML = live().slice().reverse().map((f) =>
+    `<div class="small"><code>${fmtClock(f.t - t0)}</code> · bookmarked${f.synced ? "" : " <span class='muted'>(saving…)</span>"}</div>`).join("");
 }
 
 // ------------------------------------------------------------------ floating Flag button (Document PiP)
 
-const PIP_SMALL = [330, 86], PIP_BIG = [370, 520];
+const PIP_SMALL = [330, 86];
 
 async function openPip(asPopup = false) {
   if (pip && !pip.closed) return pip.focus();
@@ -194,7 +190,7 @@ async function openPip(asPopup = false) {
       const timer = setTimeout(() => { if (!pip) showPopupFallback(); }, 4000);
       pip = await req.finally(() => clearTimeout(timer));
     } else {
-      pip = window.open("", "spark-flag", `width=${PIP_BIG[0]},height=${PIP_BIG[1]}`);
+      pip = window.open("", "spark-flag", `width=${PIP_SMALL[0]},height=${PIP_SMALL[1]}`);
     }
   } catch (err) {
     pip = null;
@@ -211,24 +207,15 @@ async function openPip(asPopup = false) {
     <div class="pip-bar">
       <span class="rec-dot" title="Recording your screen"></span><span class="pip-time">${fmtClock(elapsed())}</span>
       <button class="pip-flag" title="Flag this moment (F)">${icon("bulb")}Flag <span class="count">${live().length}</span></button>
+      <button class="icon-btn pip-undo" title="Undo last flag" aria-label="Undo last flag">${icon("x")}</button>
       <button class="icon-btn pip-end" title="End session">${icon("stop")}</button>
-    </div>
-    <div class="pip-menu hidden">
-      <div class="pip-head">${icon("check")}<span class="pip-head-t"></span><span class="muted">what kind? (optional)</span></div>
-      ${cfg.taxonomy.types.map((t, i) => `<button class="mark-opt" data-type="${t.key}" style="--tc:${TYPE_COLOR[t.key]}" title="${i + 1}">${icon(t.icon)}<span>${esc(t.participant)}</span></button>`).join("")}
-      <div class="mark-pop-sep"></div>
-      <button class="mark-opt mark-opt-muted" data-type="">${icon("bookmark")}<span>Just bookmark · I'll explain later</span></button>
-      <button class="mark-opt mark-opt-muted pip-undo">${icon("x")}<span>Undo this flag</span></button>
     </div>`;
   $(".pip-flag", d).onclick = () => flag(null);
   $(".pip-end", d).onclick = () => { if (pip.confirm("End the session? This stops the screen recording.")) finish(); };
-  $$(".mark-opt[data-type]", d).forEach((b) => (b.onclick = () => choose(b.dataset.type || null)));
   $(".pip-undo", d).onclick = undo;
   d.addEventListener("keydown", (e) => {
-    const menuOpen = !$(".pip-menu", d).classList.contains("hidden");
     if (e.key === "f" || e.key === "F") flag(null);
-    else if (menuOpen && /^[1-7]$/.test(e.key)) choose(cfg.taxonomy.types[+e.key - 1].key);
-    else if (menuOpen && (e.key === "b" || e.key === "Escape")) choose(null);
+    else if (e.key === "u" || e.key === "U") undo();
   });
   pip.setInterval(() => { const el = $(".pip-time", d); if (el) el.textContent = fmtClock(elapsed()); }, 1000);
   pip.addEventListener("pagehide", () => {
@@ -248,16 +235,6 @@ function showPopupFallback(reason) {
   $("#popup").onclick = () => openPip(true);
 }
 
-function showMenu(open) {
-  if (!pip) return;
-  const d = pip.document;
-  $(".pip-menu", d).classList.toggle("hidden", !open);
-  if (open && lastFlag) $(".pip-head-t", d).textContent = `${lastFlag.synced ? 'Saved' : 'On this device · syncing'} at ${fmtClock(lastFlag.t - t0)} ·`;
-  try { pip.resizeTo(...(open ? PIP_BIG : PIP_SMALL).map((v, i) => v + (i ? pip.outerHeight - pip.innerHeight : 0))); } catch { /* needs a click */ }
-  pip.clearTimeout(collapseTimer);
-  if (open) collapseTimer = pip.setTimeout(() => showMenu(false), 15000);
-}
-
 function paintPipCount() { pip && $(".pip-flag .count", pip.document) && ($(".pip-flag .count", pip.document).textContent = live().length); }
 
 // ------------------------------------------------------------------ flags
@@ -266,37 +243,27 @@ const rid = () => "m_" + [...crypto.getRandomValues(new Uint8Array(6))].map((b) 
 
 function flag() {
   if (!recorder || recorder.state === "inactive") return;
-  const f = { id: rid(), t: Date.now() / 1000, type: null, synced: false };
+  const f = { id: rid(), t: Date.now() / 1000, synced: false };
   flags.push(f);
   lastFlag = f;
-  bookmarkOutbox.create({ id: f.id, t: f.t, quick_type: null, source: "overlay", anchor: "timestamp",
+  bookmarkOutbox.create({ id: f.id, t: f.t, source: "overlay", anchor: "timestamp",
                          phase_at_click: "chat", exposure: { surface: "external" } });
   paintPipCount();
   paintStatus();
-  if (pip) showMenu(true); else toast(`Flagged at ${fmtClock(f.t - t0)}`);
-}
-
-function choose(type) {
-  if (!lastFlag) return;
-  lastFlag.type = type;
-  lastFlag.synced = false;
-  syncFlag(lastFlag);
-  showMenu(false);
-  paintStatus();
+  if (!pip) toast(`Flagged at ${fmtClock(f.t - t0)}`);
 }
 
 function undo() {
-  if (!lastFlag) return;
+  if (!lastFlag || lastFlag.deleted) return;
   lastFlag.deleted = true;
   lastFlag.synced = false;
   syncFlag(lastFlag);
-  showMenu(false);
   paintPipCount();
   paintStatus();
 }
 
 async function syncFlag(f) {
-  bookmarkOutbox.update(f.id, { quick_type: f.type, deleted: !!f.deleted },
+  bookmarkOutbox.update(f.id, { deleted: !!f.deleted },
     { id: f.id, t: f.t, source: "overlay", anchor: "timestamp", phase_at_click: "chat", client_version: f.client_version || 1,
       exposure: { surface: "external" } });
   await bookmarkOutbox.flush();
@@ -415,6 +382,5 @@ async function done() {
 // ------------------------------------------------------------------ boot
 
 $("#logo").innerHTML = icon("bulb");
-cfg = await config();
 if (params.get("session")) S = await api("GET", `/api/sessions/${params.get("session")}`).catch(() => null);
 setupView();

@@ -31,6 +31,27 @@ class AnnotationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             annotations.validate_episode(self.s, {"start_event_id":"e2","end_event_id":"e1"})
 
+    def test_exact_text_selection_is_stored_and_can_be_changed_in_review(self):
+        selection = {"event_id":"e1", "start":0, "end":7, "text":"Partial"}
+        annotations.patch_mark(self.s, self.m, {"quote_selection":selection}, set())
+        self.assertEqual(self.m["quote_selection"], selection)
+        self.assertEqual(self.m["quote"], "Partial")
+        self.assertIsNone(self.m["original_event_id"])
+        annotations.patch_mark(self.s, self.m, {"quote_selection":None}, set())
+        self.assertIsNone(self.m["quote"])
+
+    def test_text_selection_must_match_one_transcript_event(self):
+        for invalid in (
+            {"event_id":"e1", "start":0, "end":7, "text":"Changed"},
+            {"event_id":"e1", "start":0, "end":99, "text":"Partial output"},
+            {"event_id":"missing", "start":0, "end":7, "text":"Partial"},
+        ):
+            with self.assertRaises(ValueError):
+                annotations.create_mark(self.s, {"event_id":"e1", "quote_selection":invalid}, "m_bad1234")
+        self.s["events"][0]["text"] = "Idea 🧠 shift"
+        selected = annotations.validate_quote_selection(self.s, {"event_id":"e1", "start":7, "end":12, "text":"shift"})
+        self.assertEqual(selected["text"], "shift")
+
     def test_types_optional_and_unused_insights_valid(self):
         annotations.patch_mark(self.s, self.m, {"review":{"decision":"confirmed","after":"An unused idea", "uptake":"not_used"}}, {"additive"})
         self.assertEqual(self.m["review"]["status"], "submitted")

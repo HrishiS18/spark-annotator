@@ -38,11 +38,11 @@ Verified locally with SDK **0.2.165**, Claude Code **2.1.294**, and effective mo
 
 Integrated studies: **task → unaided baseline → interaction → unaided final write-up → independent review → optional model suggestions**.
 
-The participant landing page is session setup only. Persona controls are under **Session settings**; recording and researcher tools remain at `/record` and `/researcher` rather than appearing in the participant flow. The spark taxonomy is not shown before the task. Claude readiness distinguishes a missing SDK from a missing server API key, and unavailable agents cannot start a new session.
+The participant landing page is session setup only. Persona controls are under **Session settings**; recording and researcher tools remain at `/record` and `/researcher` rather than appearing in the participant flow. Spark categories are not shown to participants during interaction or review. Claude readiness distinguishes a missing SDK from a missing server API key, and unavailable agents cannot start a new session.
 
 During interaction:
 
-- One-click bookmarking; optional plain-language taxonomy tags.
+- One-click, taxonomy-free bookmarking. A live mark never opens a category menu.
 - Stable IDs, original click timestamps, durable browser outbox, automatic retry, honest pending/saved feedback.
 - An integrated bookmark captures displayed message/tool text at click, including partial output. It is a display snapshot, **not evidence the participant read it**.
 - Timestamp-only clicks are not automatically attributed to the last assistant message.
@@ -51,8 +51,8 @@ During interaction:
 Review is the same transcript-first interface for integrated and external sessions:
 
 - Confirm **Yes / Unsure / No**. A confirmed insight needs a brief explanation in the participant's words.
-- Categories, before-state, perceived value, uptake, later helpfulness, latency, and shift size are optional.
-- Select any ordered multi-event passage, including the participant's own messages; read full expandable messages/tool output.
+- Before-state, perceived value, uptake, later helpfulness, latency, and shift size are optional; the participant is not asked to choose a spark type. Historical category data remains in researcher exports.
+- Select any ordered multi-event passage, including the participant's own messages. Highlight exact text in the transcript to attach it to an existing moment or create a new one; event ID and character offsets are retained and checked against the source text.
 - Add missed moments without requiring a video.
 - Drafts autosave to the server and recover locally after interruption. Final submission is distinct from draft saving.
 - Revision checks reject stale edits from another tab; earlier answers remain in history.

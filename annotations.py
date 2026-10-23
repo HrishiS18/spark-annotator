@@ -59,6 +59,11 @@ def create_mark(s, body, mid):
          "exposure": exposure(body, ids), "client_version": int(body.get("client_version", 1)),
          "review": None, "review_draft": None, "review_version": 0,
          "deleted": bool(body.get("deleted"))}
+    if "quote_selection" in body:
+        m["quote_selection"] = validate_quote_selection(s, body["quote_selection"])
+        if m["quote_selection"]:
+            m["quote"] = m["quote_selection"]["text"]
+            m["event_id"] = m["quote_selection"]["event_id"]
     if body.get("episode"):
         m["episode"] = validate_episode(s, body["episode"])
         m["event_id"] = m["episode"]["start_event_id"]
@@ -81,6 +86,23 @@ def validate_episode(s, episode):
     return {"start_event_id": start, "end_event_id": end}
 
 
+def validate_quote_selection(s, selection):
+    """Keep exact participant-selected text anchored to one transcript event."""
+    if selection is None:
+        return None
+    if not isinstance(selection, dict):
+        raise ValueError("Invalid text selection")
+    event = next((e for e in s["events"] if e["id"] == selection.get("event_id")), None)
+    start, end = selection.get("start"), selection.get("end")
+    if (event is None or type(start) is not int or type(end) is not int or
+            start < 0 or end <= start or end > len(event.get("text") or "") or end - start > 2000):
+        raise ValueError("Select up to 2000 characters inside one message")
+    exact = event["text"][start:end]
+    if selection.get("text") != exact:
+        raise ValueError("Selected text does not match the transcript")
+    return {"event_id": event["id"], "start": start, "end": end, "text": exact}
+
+
 def validate_review(value, type_keys, final=False):
     if not isinstance(value, dict):
         raise ValueError("Invalid review")
@@ -92,7 +114,7 @@ def validate_review(value, type_keys, final=False):
     if r.get("decision") not in DECISIONS and final:
         raise ValueError("Confirm, reject, or mark this moment as unsure first")
     if r.get("decision") == "confirmed" and final and not str(r.get("after", "")).strip():
-        raise ValueError("Briefly describe the idea or realization")
+        raise ValueError("Briefly describe what changed")
     for field in ("before", "after"):
         r[field] = str(r.get(field) or "")[:6000]
     types = r.get("types", [])
@@ -115,7 +137,7 @@ def validate_review(value, type_keys, final=False):
 def patch_mark(s, m, body, type_keys):
     if s["phase"] == "done" or s.get("independent_review") and m.get("source") != "candidate_confirm":
         raise ConflictError("This independent review is already locked. Its original answers are preserved.")
-    content_change = any(k in body for k in ("review", "review_draft", "episode", "event_id"))
+    content_change = any(k in body for k in ("review", "review_draft", "episode", "event_id", "quote_selection"))
     if content_change:
         previous_draft = m.get("review_draft") or m.get("review") or {}
         incoming = body.get("review_draft") or body.get("review") or {}
@@ -132,6 +154,9 @@ def patch_mark(s, m, body, type_keys):
         if body["event_id"] is not None and body["event_id"] not in {e["id"] for e in s["events"]}:
             raise ValueError("Unknown event anchor")
         m["event_id"] = body["event_id"]
+    if "quote_selection" in body:
+        m["quote_selection"] = validate_quote_selection(s, body["quote_selection"])
+        m["quote"] = m["quote_selection"]["text"] if m["quote_selection"] else None
     for key in ("quick_type", "deleted"):
         if key in body:
             m[key] = body[key]

@@ -429,7 +429,8 @@ def marks_csv():
                 "video_offset_s", "source", "anchor", "event_id", "event_role", "event_text", "quote", "quick_type", "review_types",
                 "review_primary", "uptake", "latency", "intensity", "before", "after", "matched_candidates",
                 "researcher_label", "decision", "review_status", "perceived_value", "reported_outcome",
-                "passage_start", "passage_end", "original_click_t", "reference_t", "original_event_id"])
+                "passage_start", "passage_end", "original_click_t", "reference_t", "original_event_id",
+                "quote_event_id", "quote_start", "quote_end"])
     for s in all_sessions():
         ev = {e["id"]: e for e in s["events"]}
         an = analysis(s)
@@ -446,7 +447,9 @@ def marks_csv():
                         "|".join(l["candidate"] for l in an["links"] if l["mark"] == m["id"]),
                         (s["codes"].get(f"mark:{m['id']}") or {}).get("label"), r.get("decision"), r.get("status"),
                         r.get("perceived_value"), r.get("outcome"), (m.get("episode") or {}).get("start_event_id"),
-                        (m.get("episode") or {}).get("end_event_id"), m.get("t"), m.get("reference_t"), m.get("original_event_id")])
+                        (m.get("episode") or {}).get("end_event_id"), m.get("t"), m.get("reference_t"), m.get("original_event_id"),
+                        (m.get("quote_selection") or {}).get("event_id"), (m.get("quote_selection") or {}).get("start"),
+                        (m.get("quote_selection") or {}).get("end")])
     return buf.getvalue()
 
 

@@ -1,4 +1,4 @@
-// Shared helpers: API, icons, taxonomy, and the Mark-moment popover component.
+// Shared helpers for the participant interface.
 
 export const api = async (method, url, body, headers = {}, options = {}) => {
   const opts = { method, headers: { ...headers }, signal: options.signal };
@@ -40,18 +40,11 @@ export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 export const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
 export const fmtDate = (iso) => iso ? new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
 
-export const TYPE_COLOR = {
-  additive: "var(--t-additive)", representational: "var(--t-representational)", reflective: "var(--t-reflective)",
-  contrastive: "var(--t-contrastive)", counterfactual: "var(--t-counterfactual)", associative: "var(--t-associative)",
-  generative_error: "var(--t-generative_error)",
-};
-
 let CONFIG = null;
 export async function config() {
   if (!CONFIG) CONFIG = await api("GET", "/api/config");
   return CONFIG;
 }
-export const typeByKey = (cfg, key) => cfg.taxonomy.types.find((t) => t.key === key);
 
 // Lightweight Markdown-ish rendering for chat messages (paragraphs, bold, code, lists).
 export function renderText(text) {
@@ -64,70 +57,6 @@ export function renderText(text) {
   }).join("");
 }
 const inline = (s) => s.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-
-/**
- * The "What happened?" popover. The mark is already queued when this opens;
- * picking a type only annotates it, so the popover is skippable by design.
- * Closes on an outside click, when the participant resumes typing, or after `timeout` ms
- * of no interaction, so it never blocks the conversation.
- */
-export function openMarkPopover({ anchor, cfg, onPick, onClose, timeout = 15000, title = "What happened?", saveMessage = "Moment saved. Add a quick tag if you like." }) {
-  closeMarkPopover();
-  const pop = document.createElement("div");
-  pop.className = "mark-pop";
-  pop.setAttribute("role", "dialog");
-  pop.setAttribute("aria-label", "Describe this moment (optional)");
-  pop.innerHTML = `
-    <div class="mark-pop-head">
-      <span class="mark-pop-title">${esc(title)}</span><span class="muted">Optional</span>
-      <button class="icon-btn mark-pop-close" aria-label="Close">${icon("x")}</button>
-    </div>
-    <div class="mark-pop-saved">${icon("bookmark")} ${esc(saveMessage)}</div>
-    <div class="mark-pop-list">
-      ${cfg.taxonomy.types.map((t) => `
-        <button class="mark-opt" data-type="${t.key}" style="--tc:${TYPE_COLOR[t.key]}">
-          ${icon(t.icon)}<span>${esc(t.participant)}</span>
-        </button>`).join("")}
-    </div>
-    <div class="mark-pop-sep"></div>
-    <button class="mark-opt mark-opt-muted" data-type="">${icon("bookmark")}<span>Just bookmark · I'll explain later</span></button>`;
-  document.body.appendChild(pop);
-  const r = anchor.getBoundingClientRect();
-  const w = Math.min(380, window.innerWidth - 24);
-  pop.style.width = w + "px";
-  pop.style.left = Math.max(12, Math.min(window.innerWidth - w - 12, r.right - w)) + "px";
-  pop.style.maxHeight = window.innerHeight - 16 + "px";
-  const h = pop.offsetHeight;
-  pop.style.top = Math.max(8, r.top - h - 10 > 8 ? r.top - h - 10 : Math.min(window.innerHeight - h - 8, r.bottom + 10)) + "px";
-
-  let timer = setTimeout(done, timeout);
-  pop.addEventListener("pointermove", () => { clearTimeout(timer); timer = setTimeout(done, timeout); });
-  function done() { clearTimeout(timer); closeMarkPopover(); onClose?.(); }
-  pop.querySelector(".mark-pop-close").onclick = done;
-  pop.querySelectorAll(".mark-opt").forEach((b) => (b.onclick = () => { onPick?.(b.dataset.type || null); done(); }));
-  pop._outside = (e) => { if (!pop.contains(e.target) && e.target !== anchor && !anchor.contains(e.target)) done(); };
-  setTimeout(() => document.addEventListener("pointerdown", pop._outside), 0);
-  pop._keys = (e) => {
-    if (e.key === "Escape") return done();
-    if (e.target.closest?.("textarea,input") && e.key.length === 1) return done();
-    const n = parseInt(e.key, 10);
-    if (n >= 1 && n <= cfg.taxonomy.types.length && !e.target.closest("textarea,input")) {
-      onPick?.(cfg.taxonomy.types[n - 1].key); done();
-    }
-  };
-  document.addEventListener("keydown", pop._keys);
-  // Don't steal focus from the composer: a participant marking mid-sentence keeps typing.
-  if (!document.activeElement?.closest?.("textarea,input")) pop.querySelector(".mark-opt").focus({ preventScroll: true });
-  return pop;
-}
-export function closeMarkPopover() {
-  const p = document.querySelector(".mark-pop");
-  if (p) {
-    document.removeEventListener("keydown", p._keys);
-    document.removeEventListener("pointerdown", p._outside);
-    p.remove();
-  }
-}
 
 export function toast(msg) {
   let t = document.querySelector(".toast");

@@ -144,6 +144,9 @@ label.field > span { display: block; font-size: 13px; font-weight: 560; color: v
 .passage-picker .two { grid-template-columns: 1fr; }
 .passage-context details { border-left: 2px solid var(--accent-ring); padding: 6px 10px; margin: 6px 0; }
 .passage-context pre, .exposure pre { max-height: 250px; overflow: auto; }
+.quote-context blockquote { margin: 6px 0 4px; padding: 8px 11px; border-left: 3px solid var(--accent); background: var(--accent-soft); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.review-highlight { background: var(--accent-soft); color: inherit; border-bottom: 2px solid var(--accent); }
+.review-selection-actions { position: fixed; z-index: 70; display: flex; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); box-shadow: var(--shadow); }
 .review-save-row { margin-top: 12px; flex-wrap: wrap; }
 .suggestion-lock { border: 1px dashed var(--border); padding: 14px; margin-top: 18px; border-radius: 10px; }
 .msg .mark-here {

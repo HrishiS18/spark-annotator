@@ -1,5 +1,5 @@
 // One transcript-first review for integrated chat and external recordings.
-import { api, icon, esc, $, $$, config, TYPE_COLOR, toast, fmtClock } from "/static/common.js";
+import { api, icon, esc, $, $$, config, toast, fmtClock } from "/static/common.js";
 import { annotationFormHTML, wireAnnotationForm, flushReviewDrafts } from "/static/review_forms.js";
 import { BookmarkOutbox } from "/static/bookmarks.js";
 
@@ -31,7 +31,7 @@ async function prepareSuggestions() {
   }
 }
 function renderHeader() {
-  $('#brand').innerHTML = `${icon('bulb')}<span>Spark review</span>`;
+  $('#brand').innerHTML = `${icon('bookmark')}<span>Session review</span>`;
   $('#title').textContent = S.prompt.title;
   $('#meta').textContent = researcher ? 'Researcher view' : S.phase === 'done' ? 'Session complete' : independentDone() ? 'Independent review saved' : 'Independent review · model suggestions hidden';
   $('#actions').innerHTML = researcher
@@ -70,10 +70,27 @@ function seek(t) { if (video) video.currentTime = Math.max(0, Math.min(t, durati
 function renderTrack() {
   const percent = t => Math.max(0, Math.min(100, offset(t) / duration * 100));
   $('#track').innerHTML = `<div class="track-line"></div><div class="playhead" id="playhead"></div>` + liveMarks().map(m =>
-    `<button class="pin" data-pin="${m.id}" style="left:${percent(point(m))}%;--tc:${TYPE_COLOR[m.review?.primary || m.quick_type] || 'var(--accent)'}" title="Bookmark ${fmtClock(offset(point(m)))}">${icon('bookmark')}</button>`).join('');
+    `<button class="pin" data-pin="${m.id}" style="left:${percent(point(m))}%;--tc:var(--accent)" title="Bookmark ${fmtClock(offset(point(m)))}">${icon('bookmark')}</button>`).join('');
   $$('[data-pin]').forEach(b => b.onclick = () => openMoment(b.dataset.pin, true));
   $('#track').onclick = e => { if (!e.target.closest('[data-pin]')) { const box = $('#track').getBoundingClientRect(); seek((e.clientX - box.left) / box.width * duration); } };
   $('#legend').innerHTML = `<span>Your bookmarks · original click times retained</span><span class="grow muted">${fmtClock(duration)}</span>`;
+}
+function highlightedText(e) {
+  const chars = Array.from(e.text);
+  const ranges = liveMarks().map(m => m.quote_selection).filter(q => q?.event_id === e.id && q.end <= chars.length)
+    .map(q => [q.start, q.end]).sort((a, b) => a[0] - b[0]);
+  if (!ranges.length) return esc(e.text);
+  const merged = [];
+  for (const [start, end] of ranges) {
+    if (merged.length && start <= merged.at(-1)[1]) merged.at(-1)[1] = Math.max(end, merged.at(-1)[1]);
+    else merged.push([start, end]);
+  }
+  let html = '', cursor = 0;
+  for (const [start, end] of merged) {
+    html += esc(chars.slice(cursor, start).join('')) + `<mark class="review-highlight">${esc(chars.slice(start, end).join(''))}</mark>`;
+    cursor = end;
+  }
+  return html + esc(chars.slice(cursor).join(''));
 }
 function renderTranscript() {
   const tools = $('#show-tools').checked;
@@ -81,13 +98,47 @@ function renderTranscript() {
   $('#transcript').innerHTML = events.map(e => `<div class="tr-ev ${e.role}" data-ev="${e.id}">
     <button class="tr-time" data-seek="${e.id}">${fmtClock(offset(e.t))}</button><div>
       <div class="r">${esc(label(e))}${e.meta?.superseded ? ' · archived evidence' : ''}</div>
-      <details class="full-event" ${['user','assistant','partner'].includes(e.role) ? 'open' : ''}><summary>${esc(e.text.slice(0, 90))}${e.text.length > 90 ? '…' : ''}</summary><pre>${esc(e.text)}</pre>${e.output ? `<pre>${esc(e.output)}</pre>` : ''}</details>
+      <details class="full-event" ${['user','assistant','partner'].includes(e.role) ? 'open' : ''}><summary>${esc(e.text.slice(0, 90))}${e.text.length > 90 ? '…' : ''}</summary><pre data-selectable-text>${highlightedText(e)}</pre>${e.output ? `<pre>${esc(e.output)}</pre>` : ''}</details>
       ${!researcher && !independentDone() ? `<div class="row"><button class="btn btn-sm btn-ghost" data-use="${e.id}">Use this message / add moment</button><button class="btn btn-sm btn-ghost" data-through="${e.id}">Extend passage through here</button></div>` : ''}
     </div></div>`).join('') || `<p class="muted">No transcript. You can still annotate timestamped bookmarks using the recording.</p>`;
   $$('[data-seek]').forEach(b => b.onclick = () => seek(offset(eventById(b.dataset.seek).t) - 5));
   $$('[data-use]').forEach(b => b.onclick = async () => { selectedStart = b.dataset.use; if (!openId) await addMoment(selectedStart); forms.get(openId)?.selectPassage(selectedStart); });
   $$('[data-through]').forEach(b => b.onclick = () => { const start = forms.get(openId)?.startId(); if (!openId || !start) return toast('Select a starting message first'); forms.get(openId)?.selectPassage(start, b.dataset.through); });
 }
+function selectedTranscriptText() {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount !== 1) return null;
+  const range = selection.getRangeAt(0);
+  const pre = range.startContainer.parentElement?.closest('pre[data-selectable-text]');
+  if (!pre || !pre.contains(range.endContainer)) return null;
+  const eventId = pre.closest('[data-ev]')?.dataset.ev;
+  const event = eventById(eventId);
+  if (!event) return null;
+  const before = document.createRange(); before.selectNodeContents(pre); before.setEnd(range.startContainer, range.startOffset);
+  const start = Array.from(before.toString()).length, end = start + Array.from(range.toString()).length;
+  const text = Array.from(event.text).slice(start, end).join('');
+  if (end <= start || end - start > 2000 || text !== range.toString()) return null;
+  return { event_id: eventId, start, end, text, rect: range.getBoundingClientRect() };
+}
+$('#transcript').addEventListener('mouseup', () => setTimeout(() => {
+  $('.review-selection-actions')?.remove();
+  if (researcher || independentDone() || S.phase !== 'review') return;
+  const selected = selectedTranscriptText();
+  if (!selected) return;
+  const actions = document.createElement('div'); actions.className = 'review-selection-actions';
+  actions.style.left = `${Math.max(10, Math.min(window.innerWidth - 250, selected.rect.left))}px`;
+  actions.style.top = `${Math.max(10, selected.rect.top - 44)}px`;
+  if (openId && forms.get(openId)) {
+    const attach = document.createElement('button'); attach.className = 'btn btn-sm'; attach.textContent = 'Attach to open moment';
+    attach.onmousedown = e => e.preventDefault();
+    attach.onclick = () => { forms.get(openId)?.selectQuote(selected); actions.remove(); window.getSelection()?.removeAllRanges(); };
+    actions.appendChild(attach);
+  }
+  const add = document.createElement('button'); add.className = 'btn btn-sm'; add.textContent = 'New moment';
+  add.onmousedown = e => e.preventDefault();
+  add.onclick = async () => { actions.remove(); window.getSelection()?.removeAllRanges(); await addMoment(selected.event_id, null, null, selected); renderTranscript(); };
+  actions.appendChild(add); document.body.appendChild(actions);
+}, 0));
 function onTime() {
   if (!video) return;
   $('#playhead').style.left = `${video.currentTime / duration * 100}%`;
@@ -101,7 +152,7 @@ function exposures(m) {
 }
 function updateIntro() {
   const marks = liveMarks(), confirmed = marks.filter(m => m.review?.status === 'submitted' && !m.review_dirty).length;
-  $('#intro').innerHTML = `<h2>${researcher ? 'Participant moments' : 'Your moments'}</h2><p class="small muted">${confirmed}/${marks.length} reviews confirmed. ${independentDone() ? 'The independent pass is preserved separately from any suggested moments below.' : 'An unused idea can still be a spark. Unsure and No are valid answers. No bookmarks does not establish that no sparks occurred.'}</p>`;
+  $('#intro').innerHTML = `<h2>${researcher ? 'Participant moments' : 'Your moments'}</h2><p class="small muted">${confirmed}/${marks.length} reviews confirmed. ${independentDone() ? 'The independent pass is preserved separately from any suggested moments below.' : 'It is fine if you did not use an idea, or if a bookmark was not an idea at all. Unsure and No are valid answers.'}</p>`;
 }
 function renderMoments() {
   updateIntro();
@@ -114,7 +165,7 @@ function renderMoments() {
     $('[data-open]', card).onclick = () => openMoment(mark.id, true); $('[data-toggle]', card).onclick = () => openMoment(openId === mark.id ? null : mark.id);
     const replace = m => { const i = S.marks.findIndex(v => v.id === m.id); if (i >= 0) S.marks[i] = m; };
     const form = wireAnnotationForm(card, mark, { sid, events: S.events, locked: researcher || S.phase === 'done' || !!S.independent_review?.mark_ids.includes(mark.id),
-      onSaved: m => { replace(m); updateIntro(); renderTrack(); }, onChanged: m => { m.review_dirty = true; replace(m); updateIntro(); } });
+      onSaved: m => { replace(m); updateIntro(); renderTrack(); renderTranscript(); }, onChanged: m => { m.review_dirty = true; replace(m); updateIntro(); } });
     forms.set(mark.id, form);
   }
   if (!openId && liveMarks().length && !independentDone()) openMoment(liveMarks().find(m => !m.review)?.id || liveMarks()[0].id);
@@ -127,12 +178,13 @@ function openMoment(id, jump = false) {
   const mark = S.marks.find(m => m.id === id); selectedStart = mark?.episode?.start_event_id || mark?.event_id || null;
   if (jump && mark) { seek(offset(point(mark)) - 15); $(`.flag-card[data-flag="${id}"]`)?.scrollIntoView({ block: 'nearest' }); }
 }
-async function addMoment(eid, candidate = null, answer = null) {
+async function addMoment(eid, candidate = null, answer = null, quoteSelection = null) {
   if (independentDone() && !candidate) return;
   try {
     const mark = await api('POST', `/api/sessions/${sid}/marks`, { source: candidate ? 'candidate_confirm' : 'review_add', anchor: candidate ? 'suggested_passage' : eid ? 'review_passage' : 'review_timestamp', event_id: eid, client_t: Date.now(), reference_t: eid ? eventById(eid)?.t : video ? t0 + video.currentTime : null,
-      ...(candidate ? { episode: { start_event_id: candidate.start_event_id || eid, end_event_id: candidate.end_event_id || eid } } : {}) });
-    S.marks.push(mark); renderMoments(); openMoment(mark.id);
+      ...(candidate ? { episode: { start_event_id: candidate.start_event_id || eid, end_event_id: candidate.end_event_id || eid } } : {}),
+      ...(quoteSelection ? { quote_selection: { event_id: quoteSelection.event_id, start: quoteSelection.start, end: quoteSelection.end, text: quoteSelection.text } } : {}) });
+    S.marks.push(mark); renderMoments(); openMoment(mark.id); if (quoteSelection) renderTranscript();
     if (candidate) { await api('PATCH', `/api/sessions/${sid}/candidates/${candidate.id}`, { participant_response: { answer, mark_id: mark.id } }); await load(); renderSuggestions(); }
   } catch (error) { toast(error.message); }
 }
@@ -177,8 +229,8 @@ function renderSuggestions() {
     unavailable: 'Suggestions could not be prepared: ' + (S.judge?.error || 'The judge is not configured.'),
     error: 'Suggestion generation failed: ' + (S.judge?.error || 'Unknown error.'),
     not_run: 'Suggested moments have not been generated yet.',
-    done: candidates.length ? 'These are suggestions, not confirmed sparks. Keep your independent answers separate.' :
-      S.judge?.n === 0 ? 'The judge completed and found no candidate episodes. This does not mean you had no sparks.' :
+    done: candidates.length ? 'These are possible moments, not confirmed insights. Keep your independent answers separate.' :
+      S.judge?.n === 0 ? 'The judge completed and found no candidate episodes. This does not mean no meaningful moments occurred.' :
       S.candidates.some(c => c.participant_response) ? 'No suggested moments left to review.' : 'The judge completed, but no suggestions meet the evidence requirements for participant review.'
   }[status] || 'Suggestion status unavailable.';
   box.innerHTML = `<h2>${researcher ? 'LLM judge candidates' : 'Optional suggested moments'}</h2><p class="small muted" data-judge-status="${status}">${esc(message)}</p>${!researcher && ['error','unavailable'].includes(status) ? '<button class="btn btn-sm" id="retry-judge">Retry generation</button>' : ''}` + candidates.map(c => `<div class="cand-card" data-candidate="${c.id}"><p>${esc(c.trigger_quote || eventById(c.trigger_event_id)?.text || '')}</p>${c.uptake_quote ? `<p class="small">Then you: ${esc(c.uptake_quote)}</p>` : ''}${researcher ? `<p class="small muted">${esc(c.insight_evidence || c.mechanism)} · ${esc(c.type)} · ${esc(c.strength || 'uncalibrated')}</p><p>${esc(c.rationale)}</p>` : `<div class="row"><button class="btn btn-sm" data-answer="yes">I noticed this at the time</button><button class="btn btn-sm" data-answer="retrospective">Only now</button><button class="btn btn-sm" data-answer="unsure">Unsure</button><button class="btn btn-sm" data-answer="no">No</button></div>`}</div>`).join('');

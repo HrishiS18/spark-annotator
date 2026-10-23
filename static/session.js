@@ -1,5 +1,5 @@
 import {
-  api, icon, esc, $, $$, config, renderText, openMarkPopover, closeMarkPopover, toast, TYPE_COLOR, typeByKey,
+  api, icon, esc, $, $$, config, renderText, toast,
   fmtTime, isMarkHotkey,
 } from "/static/common.js";
 import { BookmarkOutbox, captureExposure } from "/static/bookmarks.js";
@@ -78,7 +78,6 @@ function route() {
   clearInterval(pollTimer);
   eventStream?.close(); eventStream = null;
   clearInterval(workspaceRefresh);
-  closeMarkPopover();
   banner("");
   renderSteps();
   $("#composer-wrap").classList.add("hidden");
@@ -133,12 +132,7 @@ function partnerName() { return S.condition === "human" ? "Partner" : isAgentRun
 
 function msgHTML(e) {
   const marks = S.marks.filter((m) => m.event_id === e.id && !m.deleted);
-  const groups = {};
-  marks.forEach((m) => (groups[m.quick_type || ""] = (groups[m.quick_type || ""] || 0) + 1));
-  const badges = Object.entries(groups).map(([k, n]) => {
-    const t = k && typeByKey(cfg, k);
-    return `<span class="mark-badge" title="${esc(t ? t.participant : "Marked")}">${icon(t ? t.icon : "bulb")}${t ? esc(t.label) : "Marked"}${n > 1 ? ` ×${n}` : ""}</span>`;
-  }).join("");
+  const badges = marks.length ? `<span class="mark-badge">${icon("bookmark")}Marked${marks.length > 1 ? ` ×${marks.length}` : ""}</span>` : "";
   const btn = e.id === "pending" ? "" : `<button class="icon-btn mark-here" data-mark="${e.id}" title="Mark this message" aria-label="Mark this message">${icon("bulb")}</button>`;
   if (["tool_call", "tool_result"].includes(e.role)) {
     const label = e.role === "tool_result" ? "Tool result" : ({ commandExecution: "Command", fileChange: "File changes", webSearch: "Web search" }[e.tool] || e.tool || "Tool");
@@ -419,7 +413,7 @@ function paintBookmarkStatus() {
     : "Not saved to this device. Keep this tab open while syncing." : S.marks.length ? "Bookmarks saved" : "";
 }
 
-function createMark({ event_id = null, anchor = "timestamp", quote = null, source = "overlay", popAnchor }) {
+function createMark({ event_id = null, anchor = "timestamp", quote = null, source = "overlay" }) {
   if (!bookmarkOutbox) return;
   const payload = { event_id, anchor, quote, source, client_t: Date.now(), phase_at_click: S.phase,
                     draft_len: $("#input").value.length, exposure: captureExposure(S, $("#content"), event_id) };
@@ -431,17 +425,7 @@ function createMark({ event_id = null, anchor = "timestamp", quote = null, sourc
   fab.classList.remove("pulse"); void fab.offsetWidth; fab.classList.add("pulse");
   const el = m.event_id && $(`.msg[data-id="${m.event_id}"]`);
   if (el) { el.classList.add("flash"); setTimeout(() => el.classList.remove("flash"), 900); }
-  openMarkPopover({
-    anchor: popAnchor?.isConnected ? popAnchor : fab, cfg,
-    saveMessage: bookmarkOutbox.storageAvailable ? "Bookmarked on this device. Syncing; tagging is optional." : "Bookmark is syncing. Keep this tab open.",
-    onPick: (type) => {
-      if (!type) return;
-      m.quick_type = type;
-      bookmarkOutbox.update(m.id, { quick_type: type }, payload);
-      if ($("#thread")) renderThread();
-      toast(`Tagged: ${typeByKey(cfg, type).label}`);
-    },
-  });
+  toast(bookmarkOutbox.storageAvailable ? "Moment saved on this device" : "Moment is syncing; keep this tab open");
   return m;
 }
 
@@ -454,7 +438,7 @@ window.addEventListener("beforeunload", (e) => {
 });
 document.addEventListener("click", (e) => {
   const b = e.target.closest(".mark-here");
-  if (b && S.phase === "chat") createMark({ event_id: b.dataset.mark, anchor: "message", popAnchor: b });
+  if (b && S.phase === "chat") createMark({ event_id: b.dataset.mark, anchor: "message" });
 });
 
 // Select text inside a message -> "Mark this" chip, so the exact phrase is captured.
@@ -473,7 +457,7 @@ document.addEventListener("mouseup", () => setTimeout(() => {
   chip.style.left = Math.min(window.innerWidth - 120, r.left + r.width / 2 - 45) + "px";
   chip.style.top = Math.max(8, r.top - 40) + "px";
   chip.onmousedown = (ev) => ev.preventDefault();
-  chip.onclick = () => { chip.remove(); createMark({ event_id: msg.dataset.id, anchor: "selection", quote: text, popAnchor: chip }); sel.removeAllRanges(); };
+  chip.onclick = () => { chip.remove(); createMark({ event_id: msg.dataset.id, anchor: "selection", quote: text }); sel.removeAllRanges(); };
   document.body.appendChild(chip);
 }, 0));
 
