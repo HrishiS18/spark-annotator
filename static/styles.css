@@ -132,6 +132,7 @@ label.field > span { display: block; font-size: 13px; font-weight: 560; color: v
 .msg-tool { font-size: 13px; color: var(--text-2); border-left: 2px solid var(--border-strong); padding: 2px 0 2px 12px; }
 .msg-tool summary { cursor: pointer; }
 .bookmark-status { position: fixed; right: 26px; bottom: 130px; z-index: 20; font-size: 12px; color: var(--text-2); background: var(--bg); padding: 5px 10px; border-radius: 8px; }
+.bookmark-status:empty { display: none; }
 .full-event pre, .passage-context pre, .exposure pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.5 ui-monospace, Menlo, monospace; }
 .full-event summary, .optional-review summary, .exposure summary { cursor: pointer; color: var(--text-2); }
 .full-event pre { max-height: none; }
@@ -181,33 +182,76 @@ label.field > span { display: block; font-size: 13px; font-weight: 560; color: v
 .hint { max-width: 780px; margin: 6px auto 0; font-size: 11.5px; color: var(--text-3); display: flex; justify-content: space-between; gap: 12px; padding: 0 5px; }
 kbd { font: 11px ui-monospace, Menlo, monospace; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; background: var(--bg); }
 
-/* Native Codex voice session: a compact, focused control surface. */
-.voice-dock {
-  position: fixed; z-index: 35; bottom: 112px; left: calc(228px + (100vw - 228px) / 2);
-  transform: translateX(-50%); width: min(540px, calc(100vw - 280px));
-  border: 1px solid var(--border-strong); border-radius: 22px; background: var(--bg);
-  box-shadow: var(--shadow); padding: 15px 18px 14px;
+/* Voice stays in the conversation, above the same composer and transcript. */
+.voice-stage {
+  flex: none; height: 180px; position: relative; display: flex; flex-direction: column;
+  align-items: center; justify-content: flex-start; padding-top: 9px;
+  background: linear-gradient(to bottom, transparent, var(--bg) 35%);
 }
-.voice-top, .voice-controls { display: flex; align-items: center; gap: 9px; }
-.voice-top { justify-content: space-between; font-size: 13px; }
-.voice-title { font-weight: 620; }
-.voice-status { color: var(--text-3); }
-.voice-presence { min-height: 72px; display: flex; align-items: center; gap: 18px; color: var(--text-2); }
-.voice-presence #voice-caption { min-width: 0; max-height: 88px; overflow-y: auto; }
-.voice-orb { width: 40px; height: 40px; flex: none; border-radius: 50%; background: var(--bg-hover); border: 1px solid var(--border-strong); }
-.voice-dock[data-state="active"] .voice-orb { background: var(--accent-soft); border-color: var(--accent-ring); box-shadow: 0 0 0 7px var(--accent-soft); animation: voice-breathe 1.8s ease-in-out infinite; }
-@keyframes voice-breathe { 50% { transform: scale(1.12); } }
-.voice-controls { justify-content: center; flex-wrap: wrap; }
-.voice-controls .btn { justify-content: center; }
-.voice-dock audio { display: none; }
-body[data-voice="enabled"] .composer-wrap { padding-bottom: 250px; }
-body[data-voice="enabled"] .mark-fab { bottom: 300px; }
-body[data-voice-active="true"] .voice-dock { bottom: 24px; }
-body[data-voice-active="true"] .composer-wrap,
-body[data-voice-active="true"] .mark-fab { display: none; }
+.voice-orb {
+  position: relative; display: block; width: 112px; height: 112px; border-radius: 50%;
+  overflow: hidden; flex: none; background: linear-gradient(145deg, #2254df 3%, #3b70ee 63%, #b8cbff 100%);
+  box-shadow: inset 0 -8px 18px #d7e2ff55;
+  animation: voice-float 3s ease-in-out infinite;
+}
+.voice-orb::before {
+  content: ""; position: absolute; inset: 52% -23% -21%;
+  border-radius: 50% 48% 0 0; transform: rotate(-7deg);
+  background: linear-gradient(180deg, #f8fbffeb, #acc3ff 62%, #789df6);
+  filter: blur(6px); animation: voice-wave 3.4s ease-in-out infinite alternate;
+}
+.voice-orb::after {
+  content: ""; position: absolute; width: 70%; height: 35%; left: 40%; top: 48%;
+  border-radius: 50%; background: #ffffffc2; filter: blur(11px); transform: rotate(-12deg);
+  animation: voice-glimmer 2.8s ease-in-out infinite alternate;
+}
+@keyframes voice-float { 50% { transform: translateY(-3px) scale(1.02); } }
+@keyframes voice-wave { to { transform: translateY(-9px) rotate(7deg); } }
+@keyframes voice-glimmer { to { transform: translate(-22px, 8px) rotate(5deg); opacity: .55; } }
+.voice-caption { color: var(--text-3); font-size: 13px; margin-top: 9px; min-height: 20px; }
+.voice-stage[data-state="active"] .voice-caption { visibility: hidden; }
+.voice-stage[data-state="error"] .voice-caption,
+.voice-stage[data-state="failed"] .voice-caption { color: var(--danger); visibility: visible; }
+.voice-control {
+  width: 38px; height: 38px; flex: none; display: grid; place-items: center;
+  border: 0; border-radius: 50%; cursor: pointer; background: var(--bg-soft); color: var(--text);
+}
+.voice-control .ic { width: 20px; height: 20px; }
+.voice-control:hover { background: var(--bg-hover); }
+.voice-control:disabled { opacity: .5; cursor: default; }
+.voice-start { background: #397bf4; color: #fff; }
+.voice-start:hover, .voice-end:hover { background: #246be8; }
+.voice-end { background: #397bf4; color: #fff; }
+.voice-sound { border: 0; background: transparent; color: var(--text-2); font-size: 13px; cursor: pointer; }
+#voice-audio { display: none; }
+body[data-voice="enabled"] .composer { border-radius: 28px; }
+body[data-voice="enabled"] .composer-add { display: block !important; }
+body[data-voice="enabled"] .msg-user { background: #e9f3ff; color: #17334f; }
+body[data-voice-active="true"] .shell { grid-template-columns: 1fr; height: 100dvh; }
+body[data-voice-active="true"] .side { display: none; }
+body[data-voice-active="true"] .main { height: 100dvh; min-height: 0; }
+body[data-voice-active="true"] .content { min-height: 0; }
+body[data-voice-active="true"] .narrow { max-width: min(84vw, 1540px); }
+body[data-voice-active="true"] .instructions { max-width: 780px; }
+body[data-voice-active="true"] .composer { width: min(84vw, 1540px); max-width: none; }
+body[data-voice-active="true"] .composer { border-radius: 999px; min-height: 60px; align-items: center; }
+body[data-voice-active="true"] .composer textarea { align-self: center; }
+body[data-voice-active="true"] .hint { visibility: hidden; }
+body[data-voice-active="true"] .mark-fab { bottom: 190px; right: 30px; }
+body[data-voice-active="true"] .bookmark-status { bottom: 154px; }
+body[data-voice-active="true"] .toast { bottom: 106px; }
+@media (prefers-reduced-motion: reduce) {
+  .voice-orb, .voice-orb::before, .voice-orb::after { animation: none; }
+}
 @media (max-width: 700px) {
-  .voice-dock { left: 50%; bottom: 125px; width: calc(100vw - 24px); padding: 13px; }
-  body[data-voice="enabled"] .mark-fab { bottom: 310px; }
+  .voice-stage { height: 160px; }
+  .voice-orb { width: 96px; height: 96px; }
+  body[data-voice-active="true"] .narrow { max-width: none; }
+  body[data-voice-active="true"] .composer { width: 100%; }
+  body[data-voice-active="true"] .mark-fab {
+    width: 42px; height: 42px; padding: 0; justify-content: center; bottom: 174px; right: 12px;
+  }
+  body[data-voice-active="true"] .mark-fab span:not(:first-child) { display: none; }
 }
 
 /* ---------- Mark moment pill + popover */
@@ -262,7 +306,6 @@ body[data-voice-active="true"] .mark-fab { display: none; }
   background: var(--text); color: var(--bg); padding: 9px 16px; border-radius: 10px; font-size: 14px; transition: all .2s; pointer-events: none;
 }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
-body[data-voice-active="true"] .toast { bottom: 190px; }
 
 /* ---------- writing phases */
 .prompt-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; background: var(--bg-side); margin-bottom: 18px; }
@@ -445,6 +488,11 @@ details.box summary { cursor: pointer; font-weight: 580; }
   .hint span:first-child { display: none; }
   .msg-user .mark-here { left: auto; right: -4px; top: -26px; }
   .rs-list { max-height: 260px; }
+}
+@media (max-width: 820px) {
+  body[data-voice-active="true"] .shell { height: 100dvh; }
+  body[data-voice-active="true"] .main { height: 100dvh; min-height: 0; }
+  body[data-voice-active="true"] .composer-wrap { position: static; }
 }
 .ic.big { width: 48px; height: 48px; }
 

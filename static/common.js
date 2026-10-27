@@ -30,6 +30,8 @@ const PATHS = {
   play: '<path d="M7.5 5.5v13l11-6.5z"/>',
   chev: '<path d="m6 9 6 6 6-6"/>',
   stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/>',
+  mic: '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8.5 21h7"/>',
+  micOff: '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8.5 21h7M3 3l18 18"/>',
 };
 export const icon = (name, cls = "") =>
   `<svg class="ic ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${PATHS[name] || ""}</svg>`;

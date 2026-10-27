@@ -92,7 +92,11 @@ function route() {
   $("#top-actions").innerHTML = "";
   $("#top-runtime").innerHTML = "";
   if (S.phase !== "chat") { voiceClient?.closeLocal(); voiceClient = null; }
-  $("#voice-dock").classList.add("hidden");
+  $("#voice-stage").classList.add("hidden");
+  $("#voice-start").classList.add("hidden");
+  $("#voice-enable-sound").classList.add("hidden");
+  $("#voice-mute").classList.add("hidden");
+  $("#voice-end").classList.add("hidden");
   document.body.dataset.voice = "off";
   document.body.dataset.voiceActive = "false";
   ({ pre: writingView, post: writingView, chat: S.external ? externalView : chatView, review: reviewView, done: doneView })[S.phase]();
@@ -184,7 +188,6 @@ function chatView() {
   $("#composer-wrap").classList.remove("hidden");
   if (isVoiceMode()) {
     document.body.dataset.voice = "enabled";
-    $("#voice-dock").classList.remove("hidden");
     $("#voice-start").onclick = startVoice;
     $("#voice-enable-sound").onclick = async () => {
       try { await $("#voice-audio").play(); voiceLocalStatus = null; renderVoice(); }
@@ -192,11 +195,12 @@ function chatView() {
     };
     $("#voice-end").onclick = endVoice;
     $("#voice-mute").onclick = () => { voiceClient?.toggleMute(); renderVoice(); };
-    $("#voice-mark").onclick = () => createMark({ anchor: "timestamp", source: "voice" });
   }
-  if (claude) {
+  if (claude || isVoiceMode()) {
     $("#add-file").classList.remove("hidden");
     $("#add-file").onclick = () => $("#workspace-upload").click();
+  }
+  if (claude) {
     $("#composer-context").innerHTML = `<span>Local study server</span><span>Task workspace</span><span>${esc(modelLabel(S.runtime?.requested_model || S.runtime?.model))}</span><span>Accept edits · commands ask</span>`;
     $("#composer-context").classList.remove("hidden");
   }
@@ -256,18 +260,23 @@ function renderVoice() {
   const labels = { inactive: "Ready", microphone: "Waiting for microphone", starting: "Starting", connecting: "Connecting",
     active: "Listening", stopping: "Ending", error: "Unavailable", failed: "Connection failed",
     "playback-blocked": "Tap to enable sound" };
-  $("#voice-dock").dataset.state = state;
+  $("#voice-stage").classList.toggle("hidden", !live);
+  $("#voice-stage").dataset.state = state;
   $("#voice-status").textContent = labels[state] || state;
-  $("#voice-caption").textContent = voice.live_caption || voice.last_caption || voice.error ||
-    (live ? "Speak naturally. You can interrupt Codex." : "Talk through your task with Codex.");
+  $("#voice-caption").textContent = state === "active" ? "" : voice.error || labels[state] || "";
   $("#voice-start").classList.toggle("hidden", live);
+  $("#voice-start").innerHTML = icon("mic");
   $("#voice-start").disabled = voiceStarting || S.runtime?.status !== "ready";
   $("#voice-enable-sound").classList.toggle("hidden", state !== "playback-blocked");
-  $("#voice-mute").classList.toggle("hidden", !voiceClient?.stream);
-  $("#voice-mute").textContent = voiceClient?.muted ? "Unmute mic" : "Mute mic";
+  $("#voice-mute").classList.toggle("hidden", !live || !voiceClient?.stream);
+  $("#voice-mute").innerHTML = icon(voiceClient?.muted ? "micOff" : "mic");
+  $("#voice-mute").setAttribute("aria-label", voiceClient?.muted ? "Unmute microphone" : "Mute microphone");
   $("#voice-mute").setAttribute("aria-pressed", String(!!voiceClient?.muted));
   $("#voice-end").classList.toggle("hidden", !live);
+  $("#voice-end").innerHTML = icon("x");
   $("#voice-end").disabled = voice.status === "stopping";
+  $("#send").classList.toggle("hidden", live);
+  $("#input").placeholder = live ? "Type" : "Ask a follow-up…";
 }
 
 async function startVoice() {
@@ -438,7 +447,14 @@ $("#input").addEventListener("input", (e) => {
   e.target.style.height = Math.min(200, e.target.scrollHeight) + "px";
 });
 $("#input").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("#composer").requestSubmit(); }
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    if (S?.phase === "chat" && isVoiceMode() && document.body.dataset.voiceActive === "true") {
+      toast("Stop voice chat to send a typed message");
+      return;
+    }
+    $("#composer").requestSubmit();
+  }
 });
 $("#composer").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -504,7 +520,7 @@ function paintBookmarkStatus() {
   if (!status) return;
   status.textContent = pending.length ? bookmarkOutbox.storageAvailable
     ? `${pending.length} saved on this device · ${pending.some(r => r.state === "failed") ? "retrying sync" : "syncing"}`
-    : "Not saved to this device. Keep this tab open while syncing." : S.marks.length ? "Bookmarks saved" : "";
+    : "Not saved to this device. Keep this tab open while syncing." : S.marks.length && document.body.dataset.voiceActive !== "true" ? "Bookmarks saved" : "";
 }
 
 function createMark({ event_id = null, anchor = "timestamp", quote = null, source = "overlay" }) {
@@ -523,7 +539,8 @@ function createMark({ event_id = null, anchor = "timestamp", quote = null, sourc
   return m;
 }
 
-$("#fab").addEventListener("click", () => createMark({ anchor: "timestamp" }));
+$("#fab").addEventListener("click", () => createMark({ anchor: "timestamp",
+  source: isVoiceMode() && document.body.dataset.voiceActive === "true" ? "voice" : "overlay" }));
 document.addEventListener("keydown", (e) => {
   if (isMarkHotkey(e) && S?.phase === "chat") { e.preventDefault(); createMark({ anchor: "hotkey" }); }
 });

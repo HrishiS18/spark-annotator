@@ -22,29 +22,27 @@
     </div>
     <div id="banner"></div>
     <div class="content" id="content"></div>
+    <section class="voice-stage hidden" id="voice-stage" aria-label="Codex voice chat">
+      <span class="sr-only" id="voice-status" role="status">Ready</span>
+      <span class="voice-orb" aria-hidden="true"></span>
+      <span class="voice-caption" id="voice-caption"></span>
+    </section>
     <div class="composer-wrap hidden" id="composer-wrap">
       <form class="composer" id="composer">
         <button class="composer-add hidden" type="button" id="add-file" title="Add task file" aria-label="Add task file">+</button>
         <textarea id="input" rows="1" placeholder="Ask a follow-up…" aria-label="Message"></textarea>
         <button class="btn btn-primary btn-sm" type="submit" id="send">Send</button>
+        <button class="voice-control voice-start hidden" type="button" id="voice-start" title="Start voice chat" aria-label="Start voice chat"></button>
+        <button class="voice-sound hidden" type="button" id="voice-enable-sound">Enable sound</button>
+        <button class="voice-control voice-mute hidden" type="button" id="voice-mute" aria-label="Mute microphone" aria-pressed="false"></button>
+        <button class="voice-control voice-end hidden" type="button" id="voice-end" title="Stop voice chat" aria-label="Stop voice chat"></button>
       </form>
       <div class="composer-context hidden" id="composer-context" aria-label="Claude Code session settings"></div>
       <div class="hint"><span><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> new line</span><span><kbd>Ctrl</kbd>+<kbd>M</kbd> mark moment</span></div>
     </div>
   </main>
 </div>
-<section class="voice-dock hidden" id="voice-dock" aria-label="Codex voice chat">
-  <div class="voice-top"><span class="voice-title">Voice chat</span><span class="voice-status" id="voice-status" role="status">Ready</span></div>
-  <div class="voice-presence"><span class="voice-orb" aria-hidden="true"></span><span id="voice-caption">Talk through your task with Codex.</span></div>
-  <div class="voice-controls">
-    <button class="btn btn-primary" type="button" id="voice-start">Start voice chat</button>
-    <button class="btn btn-sm hidden" type="button" id="voice-enable-sound">Enable sound</button>
-    <button class="btn btn-sm hidden" type="button" id="voice-mute" aria-pressed="false">Mute mic</button>
-    <button class="btn btn-sm hidden" type="button" id="voice-end">End voice chat</button>
-    <button class="btn btn-sm btn-ghost" type="button" id="voice-mark">Mark moment</button>
-  </div>
-  <audio id="voice-audio" autoplay playsinline></audio>
-</section>
+<audio id="voice-audio" autoplay playsinline></audio>
 <button class="mark-fab hidden" id="fab" aria-label="Mark this moment"><span id="fab-ic"></span><span>Mark moment</span><span class="count" id="fab-count">0</span></button>
 <script type="module" src="/static/session.js"></script>
 </body>
