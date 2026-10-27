@@ -33,6 +33,18 @@
     </div>
   </main>
 </div>
+<section class="voice-dock hidden" id="voice-dock" aria-label="Codex voice chat">
+  <div class="voice-top"><span class="voice-title">Voice chat</span><span class="voice-status" id="voice-status" role="status">Ready</span></div>
+  <div class="voice-presence"><span class="voice-orb" aria-hidden="true"></span><span id="voice-caption">Talk through your task with Codex.</span></div>
+  <div class="voice-controls">
+    <button class="btn btn-primary" type="button" id="voice-start">Start voice chat</button>
+    <button class="btn btn-sm hidden" type="button" id="voice-enable-sound">Enable sound</button>
+    <button class="btn btn-sm hidden" type="button" id="voice-mute" aria-pressed="false">Mute mic</button>
+    <button class="btn btn-sm hidden" type="button" id="voice-end">End voice chat</button>
+    <button class="btn btn-sm btn-ghost" type="button" id="voice-mark">Mark moment</button>
+  </div>
+  <audio id="voice-audio" autoplay playsinline></audio>
+</section>
 <button class="mark-fab hidden" id="fab" aria-label="Mark this moment"><span id="fab-ic"></span><span>Mark moment</span><span class="count" id="fab-count">0</span></button>
 <script type="module" src="/static/session.js"></script>
 </body>

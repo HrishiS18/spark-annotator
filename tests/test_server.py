@@ -110,6 +110,20 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(exported["marks"][0]["event_id"], assistant["id"])
         self.assertEqual(exported["runtime"]["last_turn_status"], "interrupted")
 
+    def test_voice_mode_routes_to_native_codex_session(self):
+        self.assertEqual(self.request("/api/sessions", {"study": "dilemma", "runtime": "claude",
+            "interaction_mode": "voice"}, "POST")[0], 400)
+        self.create(interaction_mode="voice")
+        self.assertEqual(self.store.load(self.sid)["interaction_mode"], "voice")
+        self.assertEqual(self.request(self.prefix + "/runtime/connect", {}, "POST")[0], 200)
+        code, answer = self.request(self.prefix + "/runtime/voice/start", {"sdp": "v=0\r\noffer"}, "POST")
+        self.assertEqual(code, 200)
+        self.assertEqual(answer["sdp"], "v=0\r\nanswer")
+        self.assertEqual(self.request(self.prefix + "/advance", {"phase": "chat"}, "POST")[0], 400)
+        self.assertEqual(self.request(self.prefix + "/message", {"text": "Hi", "client_message_id": "message-voice"}, "POST")[0], 503)
+        self.assertEqual(self.request(self.prefix + "/runtime/voice/stop", {}, "POST")[0], 200)
+        self.assertEqual(self.request(self.prefix + "/advance", {"phase": "chat"}, "POST")[0], 200)
+
     def test_blinded_double_coded_judge_validation_api(self):
         self.create()
         with server.LOCK:

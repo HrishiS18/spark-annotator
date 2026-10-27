@@ -131,6 +131,9 @@ def create_session(body, allow_legacy=False):
     runtime_kind = "external" if study.get("external") else "human" if condition == "human" else body.get("runtime", "codex")
     if runtime_kind not in AGENT_KINDS | {"human","external"} and not (allow_legacy and runtime_kind in ("plain","demo")):
         raise ValueError("Choose Codex or Claude agent. Plain chat and scripted demo are not new participant runtimes.")
+    interaction_mode = body.get("interaction_mode", "text")
+    if interaction_mode not in ("text", "voice") or (interaction_mode == "voice" and runtime_kind != "codex"):
+        raise ValueError("Voice chat is available only with the Codex agent")
     iso, _ = now()
     order = phases_for(study)
     s = {
@@ -138,6 +141,7 @@ def create_session(body, allow_legacy=False):
         "participant_id": (body.get("participant_id") or "").strip() or "anon",
         "study": study["key"], "prompt": prompt, "persona": persona,
         "condition": condition, "room": (body.get("room") or "").strip().upper() or None,
+        "interaction_mode": interaction_mode,
         "external": bool(study.get("external")),
         "phase_order": order, "phase": order[0],
         "phases": {p: {"minutes": study["phases"].get(p)} for p in order},
@@ -146,6 +150,7 @@ def create_session(body, allow_legacy=False):
         "recording": None, "parse_turns": [],
         "schema_version": 2, "analysis_runs": [],
         "runtime": {"kind": runtime_kind, "status": "disconnected", "active_turn": None, "approvals": [],
+                    "voice": {"status": "inactive"},
                     "model": os.environ.get("SPARK_CLAUDE_MODEL","sonnet") if runtime_kind == "claude" else os.environ.get("SPARK_CODEX_MODEL") or None,
                     "requested_model": os.environ.get("SPARK_CLAUDE_MODEL","sonnet") if runtime_kind == "claude" else os.environ.get("SPARK_CODEX_MODEL") or None,
                     "effort": os.environ.get("SPARK_CLAUDE_EFFORT" if runtime_kind == "claude" else "SPARK_CODEX_EFFORT", "medium")},
@@ -806,6 +811,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Workspace uploads are only available before/during agent conversations")
             if s["runtime"].get("active_turn") or s["runtime"].get("status") == "starting":
                 raise ValueError("Wait for the agent to finish before changing its files")
+            if s["runtime"].get("voice", {}).get("status") in ("starting", "connecting", "active", "stopping"):
+                raise ValueError("End voice chat before changing task files")
             n = int(self.headers.get("Content-Length") or 0)
             if n < 0 or n > 5 * 1024 * 1024:
                 raise ValueError("Maximum workspace upload is 5 MB")
@@ -888,6 +895,8 @@ class Handler(BaseHTTPRequestHandler):
                 s = load(sid)
                 if s.get("runtime", {}).get("active_turn") or s.get("runtime", {}).get("status") == "starting":
                     raise ValueError("Stop the agent or wait for it to finish before leaving the conversation")
+                if s.get("runtime", {}).get("voice", {}).get("status") in ("starting", "connecting", "active", "stopping"):
+                    raise ValueError("End voice chat before leaving the conversation")
                 nxt = advance(s, body.get("phase"), body.get("text"))
                 save(s)
             if body.get("phase") in ("chat", "post"):
@@ -930,6 +939,18 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Agents can only connect during the conversation phase")
             get_runtime().get(sid)
             return self._send(200, load(sid)["runtime"])
+        if method == "POST" and rest == ["runtime", "voice", "start"]:
+            s = load(sid)
+            if s["phase"] != "chat" or s.get("runtime", {}).get("kind") != "codex":
+                raise ValueError("Codex voice requires an active Codex conversation")
+            answer = get_runtime().get(sid).start_voice(body.get("sdp"))
+            return self._send(200, {"sdp": answer, "runtime": load(sid)["runtime"]})
+        if method == "POST" and rest == ["runtime", "voice", "stop"]:
+            s = load(sid)
+            if s.get("runtime", {}).get("kind") != "codex":
+                raise ValueError("This session does not use Codex")
+            get_runtime().get(sid).stop_voice()
+            return self._send(200, {"runtime": load(sid)["runtime"]})
         if method == "POST" and rest == ["runtime", "interrupt"]:
             get_runtime().get(sid).interrupt()
             return self._send(200, {"ok": True})

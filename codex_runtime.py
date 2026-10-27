@@ -156,6 +156,9 @@ class Worker:
         self.last_user_event = None
         self.timer = None
         self.connected = False
+        self.voice_sdp_event = None
+        self.voice_sdp = None
+        self.voice_start_error = None
         session = self.store.load(sid)
         self.workspace = manager.workspace(sid)
         self.workspace.mkdir(parents=True, exist_ok=True)
@@ -198,7 +201,8 @@ class Worker:
                     model=result.get("model") or runtime.get("model"),
                     model_provider=result.get("modelProvider"), sandbox=PERMISSION_PROFILE,
                     approval_policy=APPROVAL_POLICY, auth_mode=account["account"].get("type"),
-                    active_turn=None, approvals=[], version=manager.version)
+                    active_turn=None, approvals=[], version=manager.version,
+                    voice={"status": "inactive"})
             self.store.update(sid, ready, {"method": "runtime/ready"})
             # Restore completed/partial items without a new inference request.
             for turn in result["thread"].get("turns", []):
@@ -219,7 +223,8 @@ class Worker:
             self.timer.cancel()
         def fail(s):
             s["runtime"].update(status="error", active_turn=None, approvals=[],
-                                 error="Codex disconnected. Reconnect to recover the transcript and continue.")
+                                 error="Codex disconnected. Reconnect to recover the transcript and continue.",
+                                 voice={"status": "error", "error": "Voice connection ended with Codex."})
             for event in s["events"]:
                 if event.get("status") == "inProgress":
                     event["status"] = "interrupted"
@@ -228,6 +233,12 @@ class Worker:
     def _item(self, item, turn_id, completed=False, delta=None, output=False):
         kind, iid = item.get("type"), item.get("id")
         if not iid:
+            return
+        if kind == "userMessage" and any(c.get("type") == "text" and
+                c.get("text", "").lstrip().startswith("<realtime_delegation>")
+                for c in item.get("content", [])):
+            # Native voice delegates to the Codex agent using an internal
+            # thread message. It is not a second participant utterance.
             return
         role = {"userMessage": "user", "agentMessage": "assistant", "commandExecution": "tool_call",
                 "fileChange": "tool_call", "mcpToolCall": "tool_call", "webSearch": "tool_call",
@@ -286,11 +297,87 @@ class Worker:
                     s["events"].append(value)
         self.store.update(self.sid, mutate, {"method": "item/updated", "itemId": iid})
 
+    def _voice_item(self, item, completed):
+        if item.get("type") != "transcriptSegment" or item.get("role") not in ("user", "assistant") or not item.get("id"):
+            return
+        iid = item["id"]
+        def mutate(s):
+            event = next((e for e in s["events"] if e.get("meta", {}).get("realtime_item_id") == iid), None)
+            if event is None:
+                iso, t = stamp()
+                event = {"id": "ev_" + uuid.uuid4().hex, "ts": iso, "t": t,
+                         "role": item["role"], "text": "", "tool": None,
+                         "status": "inProgress", "meta": {"voice": True, "realtime_item_id": iid,
+                         "runtime_thread_id": self.thread_id}}
+                s["events"].append(event)
+            if item.get("text") is not None:
+                event["text"] = item["text"]
+            if completed:
+                event["status"] = "completed"
+        self.store.update(self.sid, mutate, {"method": "thread/realtime/item", "itemId": iid})
+
+    def _voice_delta(self, iid, delta):
+        if not iid or not delta:
+            return
+        def mutate(s):
+            event = next((e for e in s["events"] if e.get("meta", {}).get("realtime_item_id") == iid), None)
+            if event is not None:
+                event["text"] += delta
+        self.store.update(self.sid, mutate, {"method": "thread/realtime/item/transcript/delta", "itemId": iid})
+
     def notification(self, message):
         method, params = message["method"], message.get("params", {})
         # Save raw protocol evidence apart from participant-facing events. This
-        # callback never handles account/login responses or credentials.
-        self.store.publish(self.sid, message)
+        # callback never handles account/login responses or credentials. SDP and
+        # audio frames are deliberately excluded from the study trace.
+        if method not in ("thread/realtime/sdp", "thread/realtime/outputAudio/delta"):
+            self.store.publish(self.sid, message)
+        if method == "thread/realtime/sdp":
+            self.voice_sdp = params.get("sdp")
+            if self.voice_sdp_event:
+                self.voice_sdp_event.set()
+            return
+        if method == "thread/realtime/started":
+            def started(s):
+                voice = s["runtime"].setdefault("voice", {})
+                if voice.get("status") == "starting":
+                    voice["status"] = "connecting"
+                voice.update(version=params.get("version"), session_id=params.get("realtimeSessionId"))
+            self.store.update(self.sid, started, {"method": method})
+            return
+        if method == "thread/realtime/closed":
+            self.store.update(self.sid, lambda s: s["runtime"].update(voice={
+                "status": "inactive", "reason": params.get("reason")}), {"method": method})
+            return
+        if method == "thread/realtime/error":
+            message = params.get("message", "Voice session failed")
+            if "AVAS requires OpenAI-Alpha: quicksilver=v2" in message:
+                message = "Native Codex voice is unavailable on this app-server setup (OpenAI requires a quicksilver v2 header)."
+            self.voice_start_error = message
+            if self.voice_sdp_event:
+                self.voice_sdp_event.set()
+            self.store.update(self.sid, lambda s: s["runtime"].update(voice={
+                "status": "error", "error": self.voice_start_error}), {"method": method})
+            return
+        if method in ("thread/realtime/item/started", "thread/realtime/item/completed"):
+            self._voice_item(params.get("item") or {}, method == "thread/realtime/item/completed")
+            return
+        if method == "thread/realtime/item/transcript/delta":
+            self._voice_delta(params.get("itemId"), params.get("delta", ""))
+            return
+        if method == "thread/realtime/transcript/delta":
+            def caption(s):
+                voice = s["runtime"].setdefault("voice", {})
+                if voice.get("live_role") != params.get("role"):
+                    voice["live_caption"] = ""
+                voice["live_role"] = params.get("role")
+                voice["live_caption"] = (voice.get("live_caption", "") + params.get("delta", ""))[-1000:]
+            self.store.update(self.sid, caption, {"method": method})
+            return
+        if method == "thread/realtime/transcript/done":
+            self.store.update(self.sid, lambda s: s["runtime"].setdefault("voice", {}).update(
+                live_caption="", last_caption=params.get("text", ""), live_role=params.get("role")), {"method": method})
+            return
         if "id" in message:
             if method not in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
                 self.rpc.send({"id": message["id"], "error": {"code": -32601,
@@ -346,9 +433,73 @@ class Worker:
             self.store.update(self.sid, lambda s: s["runtime"].update(error=error.get("message", "Codex error")),
                               {"method": method})
 
+    def start_voice(self, sdp):
+        if not isinstance(sdp, str) or len(sdp) > 200_000 or not sdp.startswith("v=0"):
+            raise ValueError("A valid WebRTC offer is required")
+        with self.lock:
+            session = self.store.load(self.sid)
+            if session.get("interaction_mode") != "voice" or session["phase"] != "chat":
+                raise RuntimeUnavailable("Voice is not enabled for this conversation")
+            if session["runtime"].get("active_turn") or session["runtime"].get("status") != "ready":
+                raise RuntimeUnavailable("Wait for Codex to finish its current turn")
+            if session["runtime"].get("voice", {}).get("status") in ("starting", "connecting", "active", "stopping"):
+                raise RuntimeUnavailable("Voice chat is already running")
+            self.voice_sdp, self.voice_sdp_event, self.voice_start_error = None, threading.Event(), None
+            self.store.update(self.sid, lambda s: s["runtime"].update(voice={"status": "starting"}),
+                              {"method": "thread/realtime/start_requested"})
+            try:
+                # This is Codex's own thread-scoped voice path. Pin the tested
+                # v3 protocol: this host's app-server default selected an AVAS
+                # path that the provider rejected. The model, voice, startup
+                # context, and automatic handoffs remain Codex-managed.
+                params = {"threadId": self.thread_id, "outputModality": "audio",
+                          "transport": {"type": "webrtc", "sdp": sdp}, "version": "v3"}
+                self.rpc.request("thread/realtime/start", params, timeout=45)
+                if not self.voice_sdp_event.wait(25):
+                    raise RuntimeUnavailable("Codex did not return a voice connection answer")
+                if self.voice_start_error:
+                    raise RuntimeUnavailable(self.voice_start_error)
+                if not self.voice_sdp:
+                    raise RuntimeUnavailable("Codex did not return a voice connection answer")
+                answer = self.voice_sdp
+                self.store.update(self.sid, lambda s: s["runtime"].setdefault("voice", {}).update(status="active"),
+                                  {"method": "thread/realtime/connected"})
+                return answer
+            except Exception as exc:
+                try:
+                    self.rpc.request("thread/realtime/stop", {"threadId": self.thread_id}, timeout=10)
+                except Exception:
+                    pass
+                self.store.update(self.sid, lambda s: s["runtime"].update(voice={"status": "error", "error": str(exc)}),
+                                  {"method": "thread/realtime/start_failed"})
+                raise
+            finally:
+                self.voice_sdp_event = None
+                self.voice_sdp = None
+                self.voice_start_error = None
+
+    def stop_voice(self):
+        with self.lock:
+            status = self.store.load(self.sid)["runtime"].get("voice", {}).get("status")
+            if status not in ("starting", "connecting", "active", "stopping"):
+                return
+            self.store.update(self.sid, lambda s: s["runtime"].setdefault("voice", {}).update(status="stopping"),
+                              {"method": "thread/realtime/stop_requested"})
+            try:
+                self.rpc.request("thread/realtime/stop", {"threadId": self.thread_id}, timeout=15)
+            except Exception as exc:
+                self.store.update(self.sid, lambda s: s["runtime"].update(voice={"status": "error", "error": str(exc)}),
+                                  {"method": "thread/realtime/stop_failed"})
+                raise
+            else:
+                self.store.update(self.sid, lambda s: s["runtime"].update(voice={"status": "inactive"}),
+                                  {"method": "thread/realtime/stopped"})
+
     def message(self, text, client_id, compose_ms=None):
         with self.lock:
             session = self.store.load(self.sid)
+            if session["runtime"].get("voice", {}).get("status") in ("starting", "connecting", "active", "stopping"):
+                raise RuntimeUnavailable("End voice chat before sending a typed message.")
             previous = next((e for e in session["events"] if e.get("meta", {}).get("client_message_id") == client_id), None)
             if previous:
                 return previous

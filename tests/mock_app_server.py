@@ -75,3 +75,11 @@ for line in sys.stdin:
     elif method == "turn/interrupt":
         interrupted.set(); approved.set()
         notify("turn/completed", threadId="thr_mock", turn={"id": "turn_mock", "status": "interrupted"})
+    elif method == "thread/realtime/start":
+        notify("thread/realtime/started", threadId="thr_mock", version="v3", realtimeSessionId="voice_mock")
+        notify("thread/realtime/sdp", threadId="thr_mock", sdp="v=0\r\nmock-answer")
+        notify("thread/realtime/item/completed", threadId="thr_mock", item={
+            "id": "voice_mock_assistant", "realtimeSessionId": "voice_mock", "type": "transcriptSegment",
+            "role": "assistant", "text": "[TEST MOCK] Voice transcript."})
+    elif method == "thread/realtime/stop":
+        notify("thread/realtime/closed", threadId="thr_mock", reason="ended")

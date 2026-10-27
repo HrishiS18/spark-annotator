@@ -30,6 +30,10 @@ async function setup() {
   function syncRuntime() {
     const human = form.condition.value === "human";
     const claude = !human && form.runtime.value === "claude";
+    const codex = !human && form.runtime.value === "codex";
+    $("#interaction-field").classList.toggle("hidden", !codex);
+    form.interaction_mode.disabled = !codex;
+    if (!codex) form.interaction_mode.value = "text";
     document.body.dataset.agent = human ? "human" : form.runtime.value;
     claudeSetup.classList.toggle("hidden", !claude);
     if (claude) $("#claude-setup-model").textContent = modelLabel(cfg.runtimes?.claude?.model);

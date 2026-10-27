@@ -3,6 +3,7 @@ import {
   fmtTime, isMarkHotkey,
 } from "/static/common.js";
 import { BookmarkOutbox, captureExposure } from "/static/bookmarks.js";
+import { NativeVoiceClient } from "/static/voice.js";
 
 const sid = new URLSearchParams(location.search).get("id");
 let cfg, S, study;
@@ -13,7 +14,11 @@ let connecting = false;
 let pendingMessage = null;
 let workspaceRefresh = null;
 let bookmarkOutbox = null;
+let voiceClient = null;
+let voiceStarting = false;
+let voiceLocalStatus = null;
 const isAgentRuntime = () => ["codex","claude"].includes(S.runtime?.kind);
+const isVoiceMode = () => S.runtime?.kind === "codex" && S.interaction_mode === "voice";
 const agentName = () => S.runtime?.kind === "claude" ? "Claude" : "Codex";
 const modelLabel = (model) => !model ? "Study model" : model === "sonnet" ? "Sonnet" : model === "opus" ? "Opus" : model === "haiku" ? "Haiku" : model === "TEST ONLY" ? "Test model" : model;
 const PHASE_LABEL = { pre: "Before", chat: "Conversation", post: "After", review: "Review", done: "Done" };
@@ -86,6 +91,10 @@ function route() {
   $("#fab").classList.add("hidden");
   $("#top-actions").innerHTML = "";
   $("#top-runtime").innerHTML = "";
+  if (S.phase !== "chat") { voiceClient?.closeLocal(); voiceClient = null; }
+  $("#voice-dock").classList.add("hidden");
+  document.body.dataset.voice = "off";
+  document.body.dataset.voiceActive = "false";
   ({ pre: writingView, post: writingView, chat: S.external ? externalView : chatView, review: reviewView, done: doneView })[S.phase]();
   tick();
 }
@@ -142,10 +151,11 @@ function msgHTML(e) {
   }
   if (e.role === "user") {
     return `<div class="msg msg-user ${marks.length ? "marked" : ""}" data-id="${e.id}">${btn}${renderText(e.text)}
+      ${e.meta?.voice ? `<span class="small muted">Voice</span>` : ""}
       ${badges ? `<div class="mark-badges" style="margin-top:6px">${badges}</div>` : ""}</div>`;
   }
   return `<div class="msg msg-ai ${marks.length ? "marked" : ""}" data-id="${e.id}">${btn}
-    <div class="who">${partnerName()}<span class="mark-badges">${badges}</span></div>${renderText(e.text)}</div>`;
+    <div class="who">${partnerName()}${e.meta?.voice ? `<span class="small muted">· voice</span>` : ""}<span class="mark-badges">${badges}</span></div>${renderText(e.text)}</div>`;
 }
 
 function renderThread() {
@@ -172,6 +182,18 @@ function chatView() {
       <button class="btn btn-sm btn-ghost" id="refresh-files">Refresh files</button><div id="workspace-files"></div><pre id="file-preview" class="hidden"></pre></details>` : ""}
     <div class="thread" id="thread"></div><div id="typing"></div></div>`;
   $("#composer-wrap").classList.remove("hidden");
+  if (isVoiceMode()) {
+    document.body.dataset.voice = "enabled";
+    $("#voice-dock").classList.remove("hidden");
+    $("#voice-start").onclick = startVoice;
+    $("#voice-enable-sound").onclick = async () => {
+      try { await $("#voice-audio").play(); voiceLocalStatus = null; renderVoice(); }
+      catch (error) { toast(`Could not play voice audio: ${error.message}`); }
+    };
+    $("#voice-end").onclick = endVoice;
+    $("#voice-mute").onclick = () => { voiceClient?.toggleMute(); renderVoice(); };
+    $("#voice-mark").onclick = () => createMark({ anchor: "timestamp", source: "voice" });
+  }
   if (claude) {
     $("#add-file").classList.remove("hidden");
     $("#add-file").onclick = () => $("#workspace-upload").click();
@@ -222,6 +244,69 @@ function chatView() {
     connectAgent(); // initialization/resume only; never starts a model turn
   }
   renderRuntime();
+  renderVoice();
+}
+
+function renderVoice() {
+  if (!isVoiceMode() || S.phase !== "chat") return;
+  const voice = S.runtime?.voice || { status: "inactive" };
+  const state = voiceLocalStatus || voice.status || "inactive";
+  const live = ["starting", "connecting", "active", "stopping"].includes(voice.status) || voiceStarting;
+  document.body.dataset.voiceActive = String(live);
+  const labels = { inactive: "Ready", microphone: "Waiting for microphone", starting: "Starting", connecting: "Connecting",
+    active: "Listening", stopping: "Ending", error: "Unavailable", failed: "Connection failed",
+    "playback-blocked": "Tap to enable sound" };
+  $("#voice-dock").dataset.state = state;
+  $("#voice-status").textContent = labels[state] || state;
+  $("#voice-caption").textContent = voice.live_caption || voice.last_caption || voice.error ||
+    (live ? "Speak naturally. You can interrupt Codex." : "Talk through your task with Codex.");
+  $("#voice-start").classList.toggle("hidden", live);
+  $("#voice-start").disabled = voiceStarting || S.runtime?.status !== "ready";
+  $("#voice-enable-sound").classList.toggle("hidden", state !== "playback-blocked");
+  $("#voice-mute").classList.toggle("hidden", !voiceClient?.stream);
+  $("#voice-mute").textContent = voiceClient?.muted ? "Unmute mic" : "Mute mic";
+  $("#voice-mute").setAttribute("aria-pressed", String(!!voiceClient?.muted));
+  $("#voice-end").classList.toggle("hidden", !live);
+  $("#voice-end").disabled = voice.status === "stopping";
+}
+
+async function startVoice() {
+  if (!isVoiceMode() || voiceStarting || voiceClient?.pc) return;
+  voiceStarting = true;
+  voiceLocalStatus = "microphone";
+  const client = new NativeVoiceClient(sid, $("#voice-audio"), state => {
+    if (voiceClient !== client) return;
+    voiceLocalStatus = state === "active" || state === "inactive" ? null : state;
+    renderVoice();
+  });
+  voiceClient = client;
+  renderVoice();
+  try {
+    await client.start();
+  } catch (error) {
+    client.closeLocal();
+    if (voiceClient === client) voiceClient = null;
+    voiceLocalStatus = null;
+    try { await api("POST", `/api/sessions/${sid}/runtime/voice/stop`, {}); } catch { /* start may not have reached Codex */ }
+    if (!client.cancelled) toast(error.message);
+  } finally {
+    voiceStarting = false;
+    renderVoice();
+  }
+}
+
+async function endVoice() {
+  if (!isVoiceMode()) return;
+  try {
+    if (voiceClient) await voiceClient.stop();
+    else await api("POST", `/api/sessions/${sid}/runtime/voice/stop`, {});
+  } catch (error) { toast(error.message); }
+  finally {
+    voiceClient?.closeLocal();
+    voiceClient = null;
+    voiceLocalStatus = null;
+    renderVoice();
+  }
 }
 
 function renderRuntime() {
@@ -243,13 +328,16 @@ function renderRuntime() {
   const statusClass = ["ready","running"].includes(status) ? "ok" : ["error","failed","interrupted"].includes(status) ? "bad" : "";
   compact.innerHTML = `<span class="runtime-compact ${statusClass}" title="${esc(agentName())} status"><i></i>${esc(status.replaceAll("_", " "))}</span>`;
   $("#send").disabled = busy || active || connecting || !["ready", "interrupted", "failed"].includes(runtime.status);
-  $("#finish").disabled = busy || active || connecting;
+  const voiceActive = ["starting", "connecting", "active", "stopping"].includes(runtime.voice?.status);
+  $("#send").disabled ||= voiceActive;
+  $("#finish").disabled = busy || active || connecting || voiceActive;
   $("#stop-agent").classList.toggle("hidden", !active);
   $("#stop-agent").disabled = runtime.status === "starting";
   $("#connect-agent").disabled = active || connecting;
   $("#connect-agent").classList.toggle("hidden", runtime.status === "ready" && !runtime.error);
-  $("#workspace-upload").disabled = active || connecting;
-  $("#add-file").disabled = active || connecting;
+  $("#workspace-upload").disabled = active || connecting || voiceActive;
+  $("#add-file").disabled = active || connecting || voiceActive;
+  renderVoice();
   const approvals = runtime.approvals || [];
   const questionDrafts = new Map($$('[data-approval]').map(card=>[card.dataset.approval,
     Object.fromEntries($$('[data-answer]',card).map(input=>[input.dataset.answer,input.value]))]));
@@ -305,7 +393,13 @@ function startStream() {
     }
     S.runtime = update.runtime;
     S._revision = update.revision;
-    renderThread(); renderRuntime();
+    if (isVoiceMode() && voiceClient?.pc && !voiceStarting &&
+        ["inactive", "error"].includes(S.runtime.voice?.status)) {
+      voiceClient.closeLocal();
+      voiceClient = null;
+      voiceLocalStatus = null;
+    }
+    renderThread(); renderRuntime(); renderVoice();
     if (atBottom) scrollBottom();
     $("#stream-status")?.remove();
   });
@@ -435,6 +529,12 @@ document.addEventListener("keydown", (e) => {
 });
 window.addEventListener("beforeunload", (e) => {
   if (bookmarkOutbox?.pending().length) { e.preventDefault(); e.returnValue = ""; }
+});
+window.addEventListener("pagehide", () => {
+  if (!voiceClient?.pc) return;
+  voiceClient.closeLocal();
+  navigator.sendBeacon?.(`/api/sessions/${sid}/runtime/voice/stop`,
+    new Blob(["{}"], { type: "application/json" }));
 });
 document.addEventListener("click", (e) => {
   const b = e.target.closest(".mark-here");

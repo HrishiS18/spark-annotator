@@ -37,6 +37,12 @@ class FakeRpc:
             return {"turn": {"id": "turn_test"}}
         if method == "turn/interrupt":
             self.callback({"method": "turn/completed", "params": {"turn": {"id": "turn_test", "status": "interrupted"}}})
+        if method == "thread/realtime/start":
+            self.callback({"method": "thread/realtime/started", "params": {
+                "threadId": "thr_test", "version": "v3", "realtimeSessionId": "voice_test"}})
+            self.callback({"method": "thread/realtime/sdp", "params": {"threadId": "thr_test", "sdp": "v=0\r\nanswer"}})
+        if method == "thread/realtime/stop":
+            self.callback({"method": "thread/realtime/closed", "params": {"threadId": "thr_test", "reason": "ended"}})
         return {}
 
     def send(self, message):
@@ -131,6 +137,53 @@ class RuntimeTests(unittest.TestCase):
         self.assertNotIn("sandboxPolicy", turn["params"])
         initialize = next(m for m in worker.rpc.sent if m.get("method") == "initialize")
         self.assertTrue(initialize["params"]["capabilities"]["experimentalApi"])
+
+    def test_native_voice_uses_codex_defaults_and_preserves_transcript(self):
+        s = self.store.load(self.sid)
+        s["interaction_mode"] = "voice"
+        self.store.save(s)
+        worker = self.manager.get(self.sid)
+        self.assertEqual(worker.start_voice("v=0\r\noffer"), "v=0\r\nanswer")
+        start = next(m for m in worker.rpc.sent if m.get("method") == "thread/realtime/start")
+        self.assertEqual(start["params"], {"threadId": "thr_test", "outputModality": "audio", "version": "v3",
+                                           "transport": {"type": "webrtc", "sdp": "v=0\r\noffer"}})
+        self.assertEqual(self.store.load(self.sid)["runtime"]["voice"]["status"], "active")
+        with self.assertRaises(RuntimeUnavailable):
+            worker.message("Do this in text", "message-voice")
+        item = {"id": "spoken_1", "realtimeSessionId": "voice_test", "type": "transcriptSegment",
+                "role": "assistant", "text": "A possible next step."}
+        worker.notification({"method": "thread/realtime/item/completed", "params": {"threadId": "thr_test", "item": item}})
+        worker.notification({"method": "thread/realtime/item/completed", "params": {"threadId": "thr_test", "item": item}})
+        events = self.store.load(self.sid)["events"]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["text"], "A possible next step.")
+        self.assertTrue(events[0]["meta"]["voice"])
+        worker.notification({"method": "item/completed", "params": {"threadId": "thr_test", "turnId": "turn_voice",
+            "item": {"id": "internal_handoff", "type": "userMessage", "content": [{"type": "text",
+            "text": "<realtime_delegation>\n<input>Spoken question</input>\n</realtime_delegation>"}]}}})
+        self.assertEqual(len(self.store.load(self.sid)["events"]), 1)
+        worker.notification({"method": "thread/realtime/outputAudio/delta", "params": {
+            "threadId": "thr_test", "audio": {"data": "PRIVATE_AUDIO", "sampleRate": 24000, "numChannels": 1}}})
+        self.assertNotIn("PRIVATE_AUDIO", repr(self.store.load(self.sid)))
+        worker.stop_voice()
+        self.assertEqual(self.store.load(self.sid)["runtime"]["voice"]["status"], "inactive")
+
+    def test_native_voice_start_surfaces_provider_error_without_waiting_for_sdp(self):
+        class VoiceErrorRpc(FakeRpc):
+            def request(self, method, params=None, timeout=30):
+                if method == "thread/realtime/start":
+                    self.callback({"method": "thread/realtime/error", "params": {
+                        "threadId": "thr_test", "message": "Provider rejected voice startup"}})
+                    return {}
+                return super().request(method, params, timeout)
+        s = self.store.load(self.sid)
+        s["interaction_mode"] = "voice"
+        self.store.save(s)
+        self.manager.rpc_factory = VoiceErrorRpc
+        worker = self.manager.get(self.sid)
+        with self.assertRaisesRegex(RuntimeUnavailable, "Provider rejected voice startup"):
+            worker.start_voice("v=0\r\noffer")
+        self.assertEqual(self.store.load(self.sid)["runtime"]["voice"]["status"], "error")
 
     def test_tool_results_are_distinct_from_agent_messages(self):
         worker = self.manager.get(self.sid)

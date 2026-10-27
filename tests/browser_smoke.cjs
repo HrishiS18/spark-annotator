@@ -326,6 +326,57 @@ const assert = require('node:assert/strict');
     assert.equal(validationResult.complete_items,1); assert.equal(validationResult.agreement.evidence.cohen_kappa,1);
     assert(JSON.stringify(validationResult).includes('judge_candidate'));
     await resultsPage.screenshot({path:path.join(data,'judge-validation.png'),fullPage:true});
+    if (runtime === 'codex') {
+      const voicePage=await context.newPage(); voicePage.setDefaultTimeout(15000);
+      voicePage.on('pageerror',err=>errors.push(err.message));
+      voicePage.on('dialog',dialog=>dialog.accept());
+      await voicePage.addInitScript(() => {
+        const track={enabled:true,stop(){}};
+        Object.defineProperty(navigator,'mediaDevices',{configurable:true,value:{
+          getUserMedia:async()=>({getAudioTracks:()=>[track],getTracks:()=>[track]})}});
+        window.RTCPeerConnection=class {
+          constructor(){this.iceGatheringState='complete';this.signalingState='stable';this.connectionState='new';}
+          addTrack(){} createDataChannel(){} addEventListener(){} removeEventListener(){}
+          async createOffer(){return {type:'offer',sdp:'v=0\r\nmock-offer'};}
+          async setLocalDescription(offer){this.localDescription=offer;}
+          async setRemoteDescription(answer){assertAnswer(answer);this.connectionState='connected';this.onconnectionstatechange?.();}
+          close(){this.signalingState='closed';this.connectionState='closed';}
+        };
+        function assertAnswer(answer){if(answer.sdp!=='v=0\r\nmock-answer')throw new Error('Unexpected mock SDP');}
+      });
+      await voicePage.goto(base);
+      await voicePage.locator('#start button[type=submit]:enabled').waitFor();
+      await voicePage.locator('#start [name=participant_id]').fill('TEST-VOICE');
+      await voicePage.locator('details.home-settings summary').click();
+      assert(await voicePage.locator('#interaction-field').isVisible());
+      await voicePage.locator('#start [name=interaction_mode]').selectOption('voice');
+      await voicePage.locator('#start button[type=submit]').click();
+      await voicePage.waitForURL(/\/session\?id=/);
+      const voiceSid=new URL(voicePage.url()).searchParams.get('id');
+      await voicePage.locator('#essay').fill('I want to compare several options and understand their tradeoffs before deciding.');
+      await voicePage.locator('#submit').click();
+      await voicePage.waitForFunction(()=>document.querySelector('#runtime-panel')?.textContent.includes('ready'));
+      assert(await voicePage.locator('#voice-dock').isVisible());
+      await voicePage.locator('#voice-start').click();
+      await voicePage.locator('.msg-ai').filter({hasText:'[TEST MOCK] Voice transcript.'}).waitFor();
+      assert((await voicePage.locator('#voice-status').textContent()).includes('Listening'));
+      await voicePage.locator('#voice-mute').click();
+      assert.equal(await voicePage.locator('#voice-mute').getAttribute('aria-pressed'),'true');
+      await voicePage.locator('#voice-mark').click();
+      await voicePage.waitForFunction(async sid=>(await (await fetch('/api/sessions/'+sid)).json()).marks.length===1,voiceSid);
+      await voicePage.screenshot({path:path.join(data,'voice-interface.png'),fullPage:true});
+      await voicePage.setViewportSize({width:390,height:844});
+      assert(await voicePage.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
+      assert(await voicePage.locator('#voice-end').isVisible());
+      await voicePage.screenshot({path:path.join(data,'voice-interface-mobile.png'),fullPage:true});
+      assert(await voicePage.locator('#finish').isDisabled());
+      await voicePage.locator('#voice-end').click();
+      await voicePage.locator('#voice-start').waitFor({state:'visible'});
+      const voiceExport=await (await fetch(base+'/api/sessions/'+voiceSid+'/export.json')).json();
+      assert(voiceExport.events.some(e=>e.meta?.voice && e.text.includes('Voice transcript')));
+      assert.equal(voiceExport.marks.length,1);
+      await voicePage.close();
+    }
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ passed: true, tests: ['create','stream','approval','tools','upload','artifact','offline bookmark recovery','exposure snapshot','lost save ACK','multi-tab conflict','draft autosave recovery','multi-event passage','missed moment','automatic judging','no duplicate calls on refresh','independent blinding','retrospective suggestion','final locking','export','blinded double-coder validation'],
       status_tests:['missing transcript','completed empty result','failed result and user retry'],screenshot: path.join(data, 'spark-review.png') }));

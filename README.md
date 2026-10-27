@@ -18,6 +18,12 @@ Codex sessions use the built-in `:workspace` permission profile with `on-request
 
 New participant sessions cannot select plain LLM chat or scripted demo. Existing legacy data and internal synthetic fixtures remain supported; no live failures become demo responses.
 
+### Codex voice mode
+
+Under **Session settings**, choose **Voice chat** for a Codex session. The browser supplies microphone, speaker, mute/end controls, a live caption, and the study's **Mark moment** button. WebRTC connects to Codex's own thread-scoped realtime voice path, pinned to protocol v3 on the tested build. Codex still owns the voice model, agent tools, and handoffs; this app does not implement a separate speech agent or route voice through the text-chat endpoint. The app stores transcript segments and tool activity for review, but does not itself store microphone audio. Microphone access requires localhost or HTTPS. Voice is not available for Claude or human-partner sessions in this prototype.
+
+This is a close functional imitation, not the Codex desktop UI. The app-server voice protocol is experimental, so test the exact installed Codex build and account before a study. The live smoke test below uses synthetic speech and a temporary study database. [Codex app-server protocol](https://learn.chatgpt.com/docs/app-server), [ChatGPT Voice](https://learn.chatgpt.com/docs/features/voice).
+
 ### Claude agent setup
 
 Install the pinned `claude-agent-sdk==0.2.165` from `requirements.txt` in the server virtual environment. It includes the Claude Code executable; participants do not need their own installation.
@@ -146,7 +152,7 @@ Researcher/participant authentication, hosted execution isolation, quotas, resou
 
 Task templates/personas are configurable in `config/`; a full factorial/counterbalanced study assignment system remains future work. Human-partner chat is a prototype comparison mode, not production participant matching.
 
-Tested local runtime: **codex-cli 0.162.0-alpha.2**. Pin/test before a study. Session snapshots record task/persona/runtime configuration. [Official app-server docs](https://learn.chatgpt.com/docs/app-server), [CLI reference](https://learn.chatgpt.com/docs/cli/reference).
+Tested local text runtime: **codex-cli 0.162.0-alpha.2**; native voice was verified with **0.162.0-alpha.17.2**. Pin/test before a study. Session snapshots record task/persona/runtime configuration. [Official app-server docs](https://learn.chatgpt.com/docs/app-server), [CLI reference](https://learn.chatgpt.com/docs/cli/reference).
 
 Agent settings: `SPARK_CODEX_BIN`, `SPARK_CODEX_MODEL`, `SPARK_CODEX_EFFORT`, `SPARK_TURN_TIMEOUT`, `SPARK_DATA_DIR`. Changing the default model does not alter an existing pinned thread.
 
@@ -168,6 +174,7 @@ Live tests are separately opt-in, **synthetic only**, and consume account usage:
 .venv/bin/python tests/live_smoke.py --run-live
 .venv/bin/python tests/live_judge_smoke.py --run
 .venv/bin/python tests/live_claude_smoke.py --run-live --key-stdin
+SPARK_LIVE_VOICE=1 SPARK_LIVE_VOICE_SPEECH=1 node tests/live_voice_smoke.cjs
 ```
 
 ## Code map
