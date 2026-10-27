@@ -31,6 +31,10 @@
         <option value="claude">Claude Code</option>
       </select></label>
     </div>
+    <label class="field" id="interaction-field"><span>Conversation mode</span><select name="interaction_mode">
+      <option value="text">Text chat</option>
+      <option value="voice">Voice chat</option>
+    </select><small>Voice uses Codex's native voice session. Your microphone audio goes to OpenAI; this app saves the transcript, not the audio.</small></label>
     <p class="permission-note" id="permission-note"></p>
     <section class="claude-setup hidden" id="claude-setup" aria-label="Claude Code session setup">
       <div class="claude-setup-heading"><span class="claude-mark" aria-hidden="true">✳</span><strong>Claude Code</strong><span>Study setup</span></div>
@@ -46,10 +50,6 @@
     <details class="home-settings">
       <summary>Session settings</summary>
       <label class="field" id="persona-field"><span>Agent persona</span><select name="persona"></select></label>
-      <label class="field" id="interaction-field"><span>Conversation mode</span><select name="interaction_mode">
-        <option value="text">Text chat</option>
-        <option value="voice">Voice chat</option>
-      </select><small>Voice uses Codex's native voice session. Your microphone audio goes to OpenAI; this app saves the transcript, not the audio. Available only with Codex.</small></label>
       <p class="small muted">Sessions are saved on the Mac running this server. AI providers process messages in AI sessions. Spark analysis may send the task, baseline, and transcript to a separate LLM; bookmarks and annotations are excluded.</p>
     </details>
     <p id="runtime-status" class="home-status small" role="status" aria-live="polite">Loading session setup…</p>
