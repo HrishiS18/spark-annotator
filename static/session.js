@@ -17,6 +17,9 @@ let bookmarkOutbox = null;
 let voiceClient = null;
 let voiceStarting = false;
 let voiceLocalStatus = null;
+let voiceAutostartPending = false;
+let voiceStartError = null;
+const voiceAutostartKey = `voice-autostart:${sid}`;
 const isAgentRuntime = () => ["codex","claude"].includes(S.runtime?.kind);
 const isVoiceMode = () => S.runtime?.kind === "codex" && S.interaction_mode === "voice";
 const agentName = () => S.runtime?.kind === "claude" ? "Claude" : "Codex";
@@ -92,6 +95,8 @@ function route() {
   $("#top-actions").innerHTML = "";
   $("#top-runtime").innerHTML = "";
   if (S.phase !== "chat") { voiceClient?.closeLocal(); voiceClient = null; }
+  voiceAutostartPending = false;
+  voiceStartError = null;
   $("#voice-stage").classList.add("hidden");
   $("#voice-start").classList.add("hidden");
   $("#voice-enable-sound").classList.add("hidden");
@@ -188,6 +193,7 @@ function chatView() {
   $("#composer-wrap").classList.remove("hidden");
   if (isVoiceMode()) {
     document.body.dataset.voice = "enabled";
+    voiceAutostartPending = !store.get(voiceAutostartKey) && !S.events.some(event => event.meta?.voice);
     $("#voice-start").onclick = startVoice;
     $("#voice-enable-sound").onclick = async () => {
       try { await $("#voice-audio").play(); voiceLocalStatus = null; renderVoice(); }
@@ -249,30 +255,45 @@ function chatView() {
   }
   renderRuntime();
   renderVoice();
+  maybeAutostartVoice();
+}
+
+function maybeAutostartVoice() {
+  if (!voiceAutostartPending || !isVoiceMode() || S.phase !== "chat" || connecting || S.runtime?.status !== "ready") return;
+  voiceAutostartPending = false;
+  store.set(voiceAutostartKey, "attempted");
+  if (!["starting", "connecting", "active", "stopping"].includes(S.runtime.voice?.status)) void startVoice();
+  else renderVoice();
 }
 
 function renderVoice() {
   if (!isVoiceMode() || S.phase !== "chat") return;
   const voice = S.runtime?.voice || { status: "inactive" };
   const state = voiceLocalStatus || voice.status || "inactive";
-  const live = ["starting", "connecting", "active", "stopping"].includes(voice.status) || voiceStarting;
+  const actualLive = ["starting", "connecting", "active", "stopping"].includes(voice.status) || voiceStarting;
+  const live = actualLive || voiceAutostartPending;
   document.body.dataset.voiceActive = String(live);
   const labels = { inactive: "Ready", microphone: "Waiting for microphone", starting: "Starting", connecting: "Connecting",
     active: "Listening", stopping: "Ending", error: "Unavailable", failed: "Connection failed",
     "playback-blocked": "Tap to enable sound" };
-  $("#voice-stage").classList.toggle("hidden", !live);
-  $("#voice-stage").dataset.state = state;
+  $("#voice-stage").classList.toggle("hidden", !live && !voiceStartError);
+  $("#voice-stage").dataset.state = (voiceStartError || S.runtime?.status === "error") ? "error" : state;
   $("#voice-status").textContent = labels[state] || state;
-  $("#voice-caption").textContent = state === "active" ? "" : voice.error || labels[state] || "";
+  $("#voice-caption").textContent = voiceAutostartPending ?
+    (S.runtime?.status === "error" ? S.runtime.error || "Could not connect to Codex. Reconnect to try again." : "Preparing voice chat") :
+    voiceStartError ? "Voice couldn't start. Check microphone access, then retry." :
+    state === "active" ? "" : voice.error || labels[state] || "";
   $("#voice-start").classList.toggle("hidden", live);
   $("#voice-start").innerHTML = icon("mic");
+  $("#voice-start").setAttribute("aria-label", voiceStartError ? "Retry voice chat" : "Start voice chat");
+  $("#voice-start").title = voiceStartError ? "Retry voice chat" : "Start voice chat";
   $("#voice-start").disabled = voiceStarting || S.runtime?.status !== "ready";
   $("#voice-enable-sound").classList.toggle("hidden", state !== "playback-blocked");
-  $("#voice-mute").classList.toggle("hidden", !live || !voiceClient?.stream);
+  $("#voice-mute").classList.toggle("hidden", !actualLive || !voiceClient?.stream);
   $("#voice-mute").innerHTML = icon(voiceClient?.muted ? "micOff" : "mic");
   $("#voice-mute").setAttribute("aria-label", voiceClient?.muted ? "Unmute microphone" : "Mute microphone");
   $("#voice-mute").setAttribute("aria-pressed", String(!!voiceClient?.muted));
-  $("#voice-end").classList.toggle("hidden", !live);
+  $("#voice-end").classList.toggle("hidden", !actualLive);
   $("#voice-end").innerHTML = icon("x");
   $("#voice-end").disabled = voice.status === "stopping";
   $("#send").classList.toggle("hidden", live);
@@ -282,6 +303,7 @@ function renderVoice() {
 async function startVoice() {
   if (!isVoiceMode() || voiceStarting || voiceClient?.pc) return;
   voiceStarting = true;
+  voiceStartError = null;
   voiceLocalStatus = "microphone";
   const client = new NativeVoiceClient(sid, $("#voice-audio"), state => {
     if (voiceClient !== client) return;
@@ -297,15 +319,16 @@ async function startVoice() {
     if (voiceClient === client) voiceClient = null;
     voiceLocalStatus = null;
     try { await api("POST", `/api/sessions/${sid}/runtime/voice/stop`, {}); } catch { /* start may not have reached Codex */ }
-    if (!client.cancelled) toast(error.message);
+    if (!client.cancelled) { voiceStartError = error.message; toast(error.message); }
   } finally {
     voiceStarting = false;
-    renderVoice();
+    renderRuntime();
   }
 }
 
 async function endVoice() {
   if (!isVoiceMode()) return;
+  voiceStartError = null;
   try {
     if (voiceClient) await voiceClient.stop();
     else await api("POST", `/api/sessions/${sid}/runtime/voice/stop`, {});
@@ -314,7 +337,7 @@ async function endVoice() {
     voiceClient?.closeLocal();
     voiceClient = null;
     voiceLocalStatus = null;
-    renderVoice();
+    renderRuntime();
   }
 }
 
@@ -337,7 +360,8 @@ function renderRuntime() {
   const statusClass = ["ready","running"].includes(status) ? "ok" : ["error","failed","interrupted"].includes(status) ? "bad" : "";
   compact.innerHTML = `<span class="runtime-compact ${statusClass}" title="${esc(agentName())} status"><i></i>${esc(status.replaceAll("_", " "))}</span>`;
   $("#send").disabled = busy || active || connecting || !["ready", "interrupted", "failed"].includes(runtime.status);
-  const voiceActive = ["starting", "connecting", "active", "stopping"].includes(runtime.voice?.status);
+  const voiceActive = ["starting", "connecting", "active", "stopping"].includes(runtime.voice?.status) ||
+    voiceStarting || (voiceAutostartPending && runtime.status !== "error");
   $("#send").disabled ||= voiceActive;
   $("#finish").disabled = busy || active || connecting || voiceActive;
   $("#stop-agent").classList.toggle("hidden", !active);
@@ -386,7 +410,7 @@ async function connectAgent() {
   connecting = true; renderRuntime();
   try { S.runtime = await api("POST", `/api/sessions/${sid}/runtime/connect`, {}); }
   catch (err) { S.runtime.status = "error"; S.runtime.error = err.message; }
-  finally { connecting = false; renderRuntime(); }
+  finally { connecting = false; renderRuntime(); maybeAutostartVoice(); }
 }
 
 function startStream() {
@@ -408,7 +432,7 @@ function startStream() {
       voiceClient = null;
       voiceLocalStatus = null;
     }
-    renderThread(); renderRuntime(); renderVoice();
+    renderThread(); renderRuntime(); renderVoice(); maybeAutostartVoice();
     if (atBottom) scrollBottom();
     $("#stream-status")?.remove();
   });
