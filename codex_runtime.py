@@ -191,8 +191,9 @@ class Worker:
                 params["threadId"] = runtime["thread_id"]
                 result = self.rpc.request("thread/resume", params)
             else:
+                task = session["config_snapshot"].get("agent_instructions") or "Work with the participant on the task in TASK.md."
                 params["developerInstructions"] = session["config_snapshot"]["persona"]["system"] + (
-                    "\n\nWork with the participant on the task in TASK.md. Use only the task workspace. "
+                    "\n\n" + task + " Use only the task workspace. "
                     "Do not search for study records, participant annotations, authentication files, or other sessions.")
                 result = self.rpc.request("thread/start", params)
             self.thread_id = result["thread"]["id"]

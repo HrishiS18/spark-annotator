@@ -34,6 +34,7 @@ async function setup() {
     $("#interaction-field").classList.toggle("hidden", !codex);
     form.interaction_mode.disabled = !codex;
     if (!codex) form.interaction_mode.value = "text";
+    $("#voice-note").classList.toggle("hidden", form.interaction_mode.value !== "voice");
     document.body.dataset.agent = human ? "human" : form.runtime.value;
     claudeSetup.classList.toggle("hidden", !claude);
     if (claude) $("#claude-setup-model").textContent = modelLabel(cfg.runtimes?.claude?.model);
@@ -78,6 +79,7 @@ async function setup() {
   form.study.onchange = syncStudy;
   form.condition.onchange = syncPartner;
   form.runtime.onchange = syncRuntime;
+  form.interaction_mode.addEventListener("change", syncRuntime);
   syncStudy(); syncPartner();
   form.onsubmit = async event => {
     event.preventDefault();

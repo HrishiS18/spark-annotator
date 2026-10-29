@@ -1,0 +1,45 @@
+{
+  "_comment": "Open-ended highlight annotation. These are defaults; a study in studies.json can override any key under an \"annotation\" object. Each new session snapshots the merged settings, so later edits here never change how an existing session validates or displays. Highlights record exact character spans (code points) of transcript text, tool output, or the participant's written answers, each with an optional note and free tags. Spans are the stable unit; any category scheme is applied later and can change without re-annotation.",
+  "highlights": {
+    "enabled": true,
+    "standalone": true,
+    "live_selection_offsets": true,
+    "live_selection_min_chars": 3,
+    "max_chars": 2000,
+    "note_max_chars": 2000,
+    "max_tags": 8,
+    "tag_max_chars": 40,
+    "tag_suggestions": "participant",
+    "candidate_highlights": true,
+    "note_autosave_ms": 700,
+    "targets": {
+      "event_roles": ["user", "assistant", "partner", "tool_call", "tool_result"],
+      "event_fields": ["text", "output"],
+      "writing": ["pre", "post"]
+    }
+  },
+  "wording": {
+    "highlight_action": "Highlight",
+    "attach_action": "Add to open moment",
+    "new_moment_action": "New moment",
+    "adjust_action": "Use as new boundaries",
+    "panel_title": "Your highlights",
+    "panel_hint": "Select any words or passages that stood out, in the conversation or in your own answers. Add a note in your own words. You don't need to decide whether it was an insight.",
+    "panel_empty": "No highlights yet. Select text on the left to add one.",
+    "note_label": "Note",
+    "note_placeholder": "What stood out about this?",
+    "tags_label": "Tags",
+    "tags_hint": "A few words describing what happened for you. Press Enter or comma after each.",
+    "link_label": "Part of moment",
+    "link_none": "Not part of a moment",
+    "linked_title": "Highlighted text in this moment",
+    "adjust_button": "Adjust",
+    "adjust_hint": "Select the new text on the left, then choose \"Use as new boundaries\".",
+    "remove_button": "Remove",
+    "writing_title": "Your written answers",
+    "writing_labels": {"pre": "Before the conversation", "post": "After the conversation"},
+    "candidate_label": "Suggested passage",
+    "moment_label": "Moment",
+    "output_label": "output"
+  }
+}

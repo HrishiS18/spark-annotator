@@ -133,7 +133,8 @@ class ClaudeWorker:
             result = self.rpc.request("initialize",{"cwd":str(self.workspace),"session_id":self.thread_id,"resume":resuming,
                 "model":runtime.get("requested_model") or runtime.get("model") or "sonnet",
                 "effort":runtime.get("effort","medium"),"max_budget_usd":manager.max_budget_usd,
-                "persona":session["config_snapshot"]["persona"]["system"]},timeout=60)
+                "persona":session["config_snapshot"]["persona"]["system"],
+                "instructions":session["config_snapshot"].get("agent_instructions") or "Work on TASK.md in this workspace."},timeout=60)
             self.thread_id = result["session_id"]
             def ready(s):
                 s["runtime"].update(status="ready",error=None,thread_id=self.thread_id,

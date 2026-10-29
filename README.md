@@ -2,6 +2,28 @@
 
 Local research prototype for **sparks**: participant-perceived valuable ideas or insights. Perceived value, adoption, persuasion, copying, and eventual usefulness are separate measurements.
 
+## Recent additions
+
+**Open-ended highlight annotation** (details under Participant flow and Storage / exports):
+
+- Participants can highlight any words or passages in transcript messages, tool output, or their own before/after answers, as standalone highlights or as part of a moment, each with a note and free tags. Selection actions: **Add to open moment**, **Highlight**, **New moment**, and **Use as new boundaries** while adjusting.
+- A **Your highlights** panel on the review page: jump-to-text, autosaved notes, tag chips with suggestions from the participant's own earlier tags, a moment menu, **Adjust** and **Remove**. Clicking highlighted text jumps to its card.
+- Highlights lock with the independent pass. A confirmed model suggestion becomes editable highlights on the new moment, so boundary corrections are recorded.
+- Spans are exact character offsets checked against the stored text; any category scheme can be applied later without re-annotating.
+- `highlights.csv` export and full version history in the session JSON. The judge never sees highlights.
+- All limits, allowed targets, tag-suggestion scope, and participant wording live in `config/annotation.json`; studies can override them, and each session snapshots its settings. Set `highlights.enabled` to `false` for the previous review page.
+- Live **Mark this** selections store exact offsets when the text matches the stored message uniquely.
+
+**Study option:** `agent_instructions` in `studies.json` gives the agent the question directly instead of pointing it at `TASK.md`. The dilemma study uses it, so the agent replies without opening files.
+
+**Fixes found in live end-to-end runs with Codex:**
+
+- No false "Connection interrupted" notice on the planned 25-second stream reconnect; real outages still show it.
+- Review transcript, moment details, and suggestion cards hide Markdown markers (`**bold**`, `` `code` ``) without changing stored text or offsets.
+- Passage pickers number conversation turns only; agent tool events are labelled "↳ tool call" / "↳ tool result".
+- Attaching a quote inside a moment's chosen passage keeps that passage.
+- "Bookmarks saved" no longer overlaps the final-answer box; the voice disclosure on the setup page shows only for Voice chat.
+
 ## Start locally
 
 ```bash
@@ -49,6 +71,7 @@ The participant landing page is session setup only. Persona controls are under *
 During interaction:
 
 - One-click, taxonomy-free bookmarking. A live mark never opens a category menu.
+- Selecting text and choosing **Mark this** stores exact character offsets when the text matches the stored message uniquely; otherwise the quote is kept without offsets and the bookmark is never rejected.
 - Stable IDs, original click timestamps, durable browser outbox, automatic retry, honest pending/saved feedback.
 - An integrated bookmark captures displayed message/tool text at click, including partial output. It is a display snapshot, **not evidence the participant read it**.
 - Timestamp-only clicks are not automatically attributed to the last assistant message.
@@ -60,6 +83,9 @@ Review is the same transcript-first interface for integrated and external sessio
 - Before-state, perceived value, uptake, later helpfulness, latency, and shift size are optional; the participant is not asked to choose a spark type. Historical category data remains in researcher exports.
 - Select any ordered multi-event passage, including the participant's own messages. Highlight exact text in the transcript to attach it to an existing moment or create a new one; event ID and character offsets are retained and checked against the source text.
 - Add missed moments without requiring a video.
+- **Open-ended highlights.** Select any words or passages — in transcript messages, tool output, or the participant's own before/after answers — and either keep them as standalone highlights or add them to a moment. Each highlight has its own note and free tags in the participant's words (suggestions come only from that participant's earlier tags). Highlights can be re-bounded with **Adjust**; every earlier boundary, note, and tag set stays in the record history. A moment's first transcript quote remains its main `quote_selection`; further text becomes linked highlights.
+- Highlights belong to the independent pass and lock with it. Confirming a model suggestion turns its trigger/uptake passages into editable highlights on the new moment, so boundary corrections are recorded.
+- Limits, allowed targets, tag-suggestion scope, standalone highlights, and participant wording are set in `config/annotation.json`; a study can override any key with an `annotation` object in `studies.json`. Each session snapshots its merged settings at creation.
 - Drafts autosave to the server and recover locally after interruption. Final submission is distinct from draft saving.
 - Revision checks reject stale edits from another tab; earlier answers remain in history.
 - Finish the independent pass to lock its answers **before** seeing LLM suggestions.
@@ -137,7 +163,7 @@ Imported timestamp alignment supplies contextual suggestions, not confirmed caus
 - SQLite transactions and revision checks; full historical analysis runs and archived responses.
 - Re-import preserves event identities, prior evidence, and annotations.
 - Workspaces: `data/workspaces/<session-id>/`; uploaded logs: `data/uploads/`; video: `data/recordings/`.
-- Full session JSON includes research history/runtime traces; CSV exports contain current participant annotations and LLM candidates. CSV text fields are abbreviated; use JSON/full transcript for full evidence.
+- Full session JSON includes research history/runtime traces; CSV exports contain current participant annotations, highlights (`highlights.csv`: span, target, note, tags, linked moment, independent-pass flag, version), and LLM candidates. CSV text fields are abbreviated; use JSON/full transcript for full evidence.
 - Browser localStorage temporarily contains unsynced bookmarks and review drafts. Consider shared-device cleanup and retention in the study protocol.
 
 Back up SQLite using a SQLite-aware backup or with the server stopped. Copying the database without its active WAL is not a reliable backup. All `data/` is git-ignored.
@@ -150,7 +176,7 @@ Study data is local to the execution host, **not model inference**. Codex also m
 
 Researcher/participant authentication, hosted execution isolation, quotas, resource limits, pairing/deployment hardening, formal adjudication, and adequately powered judge validation remain unfinished. The local tool now supports blinded double-coding, but tokenized coder links and UI/API-view hiding are workflow safeguards, **not an authorization boundary**; researcher/export routes are currently unauthenticated. Do not expose this publicly or share a researcher's ChatGPT login as a hosted service credential.
 
-Task templates/personas are configurable in `config/`; a full factorial/counterbalanced study assignment system remains future work. Human-partner chat is a prototype comparison mode, not production participant matching.
+Task templates/personas are configurable in `config/`. A study's optional `agent_instructions` (with `{task}` replaced by the question) replaces the default "work on TASK.md" instruction, so conversational studies such as the dilemmas get the question directly and the agent replies without opening files; a full factorial/counterbalanced study assignment system remains future work. Human-partner chat is a prototype comparison mode, not production participant matching.
 
 Tested local text runtime: **codex-cli 0.162.0-alpha.2**; native voice was verified with **0.162.0-alpha.17.2**. Pin/test before a study. Session snapshots record task/persona/runtime configuration. [Official app-server docs](https://learn.chatgpt.com/docs/app-server), [CLI reference](https://learn.chatgpt.com/docs/cli/reference).
 
@@ -186,7 +212,7 @@ codex_runtime.py      agent app-server bridge, approvals, workspace, resume
 agent_runtime.py      shared provider dispatch (Codex / Claude only)
 claude_runtime.py     Claude event/approval adapter, native-session recovery
 claude_sdk_worker.py  isolated official SDK client with native tools/prompt
-annotations.py        participant reviews, evidence passages, locking
+annotations.py        participant reviews, evidence passages, highlights, locking
 judge.py              blinded LLM coding, quote/ID validation
 judge_backend.py      restricted Codex judge / optional API adapter
 judge_validation.py   blinded sampling, coder agreement, validation export
@@ -194,7 +220,8 @@ parsers.py            external log normalization (not inference)
 transcript.py         full timestamped transcript rendering
 static/bookmarks.js   durable retry outbox and click snapshots
 static/review_forms.js autosave, conflict checks, optional review fields
+static/highlights.js  open-ended highlight panel, notes/tags, span painting
 static/               participant/researcher/recorder/review interfaces
-config/               taxonomy, study templates, personas
+config/               taxonomy, study templates, personas, annotation settings
 tests/                synthetic unit/API/browser/live verification
 ```

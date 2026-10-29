@@ -147,7 +147,7 @@ label.field > span { display: block; font-size: 13px; font-weight: 560; color: v
 .passage-context pre, .exposure pre { max-height: 250px; overflow: auto; }
 .quote-context blockquote { margin: 6px 0 4px; padding: 8px 11px; border-left: 3px solid var(--accent); background: var(--accent-soft); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
 .review-highlight { background: var(--accent-soft); color: inherit; border-bottom: 2px solid var(--accent); }
-.review-selection-actions { position: fixed; z-index: 70; display: flex; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); box-shadow: var(--shadow); }
+.review-selection-actions { position: fixed; z-index: 70; display: flex; flex-wrap: wrap; max-width: calc(100vw - 20px); gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); box-shadow: var(--shadow); }
 .review-save-row { margin-top: 12px; flex-wrap: wrap; }
 .suggestion-lock { border: 1px dashed var(--border); padding: 14px; margin-top: 18px; border-radius: 10px; }
 .msg .mark-here {
@@ -670,3 +670,37 @@ details.card > summary { list-style-position: outside; }
 .lane .d.judge .ic { width: 14px; height: 14px; fill: currentColor; }
 .lane .d.judge.persuasion .ic, .lane .d.judge.copying .ic { fill: none; }
 .pm.pm-judge { border-radius: 50%; top: 33px; }
+
+/* Open-ended highlights */
+mark.hl { color: inherit; background: transparent; border-radius: 2px; cursor: pointer; }
+mark.hl.hl-free { background: color-mix(in srgb, var(--t-counterfactual) 18%, transparent); border-bottom: 2px solid var(--t-counterfactual); }
+mark.hl.hl-moment { background: var(--accent-soft); border-bottom: 2px solid var(--accent); }
+mark.hl.hl-candidate { border-bottom: 2px dashed var(--t-representational); }
+mark.hl.review-highlight { background: var(--accent-soft); border-bottom: 2px solid var(--accent); }
+mark.hl.hl-flash, .hl-card.hl-flash { outline: 2px solid var(--accent-ring); }
+.rv-writings:empty { display: none; }
+.rv-writings { border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 8px; max-height: 240px; overflow-y: auto; }
+.rv-writings h3 { margin: 0 0 6px; }
+.writing-block .r { font-size: 12px; color: var(--text-3); margin: 6px 0 2px; }
+.writing-block pre { white-space: pre-wrap; margin: 0; font: inherit; }
+.hl-panel { margin: 18px 0; }
+.hl-panel h2 { margin-bottom: 4px; }
+.hl-card { border: 1px solid var(--border); border-left: 3px solid var(--t-counterfactual); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; background: var(--bg); }
+.hl-card.linked { border-left-color: var(--accent); }
+.hl-card.adjusting { box-shadow: 0 0 0 2px var(--accent-ring); }
+.hl-card.read-only { opacity: .85; }
+.hl-quote { margin: 0 0 4px; padding: 4px 8px; border-left: 2px solid var(--border-strong); cursor: pointer; white-space: pre-wrap; max-height: 9em; overflow: auto; }
+.hl-card textarea { min-height: 52px; }
+.tag-box { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; border: 1px solid var(--border); border-radius: 8px; padding: 4px 6px; background: var(--bg-input); }
+.tag-box input { flex: 1; min-width: 90px; border: 0; outline: 0; background: transparent; color: inherit; font: inherit; padding: 2px; }
+.tag-chip { display: inline-flex; align-items: center; gap: 2px; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; font-size: 12px; }
+.tag-chip button { border: 0; background: none; color: var(--text-3); cursor: pointer; padding: 0 0 0 2px; font-size: 13px; }
+.linked-highlights:empty { display: none; }
+.linked-highlights { margin: 6px 0; }
+.linked-hl { display: block; width: 100%; text-align: left; margin-top: 4px; padding: 4px 8px; border: 0; border-left: 2px solid var(--accent); background: var(--accent-soft); color: inherit; font: inherit; font-size: 13px; cursor: pointer; border-radius: 0 6px 6px 0; }
+
+/* Markdown in the review transcript: markers hidden, offsets unchanged */
+mark.md-mark { display: none; }
+mark.md-strong, mark.md-code { background: transparent; color: inherit; }
+mark.md-strong { font-weight: 650; }
+mark.md-code { background: var(--bg-soft); border-radius: 3px; }

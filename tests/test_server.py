@@ -110,6 +110,18 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(exported["marks"][0]["event_id"], assistant["id"])
         self.assertEqual(exported["runtime"]["last_turn_status"], "interrupted")
 
+    def test_study_agent_instructions_replace_task_file_default(self):
+        s = self.create()
+        self.assertIn(s["prompt"]["text"], s["config_snapshot"]["agent_instructions"])
+        self.assertEqual(self.request(self.prefix + "/runtime/connect", {}, "POST")[0], 200)
+        start = next(m for m in self.runtime.get(self.sid).rpc.sent if m["method"] == "thread/start")
+        instructions = start["params"]["developerInstructions"]
+        self.assertIn(s["prompt"]["text"], instructions)
+        self.assertNotIn("TASK.md", instructions)
+        self.assertIn("Do not search for study records", instructions)
+        trading = self.create(study="trading")
+        self.assertIsNone(trading["config_snapshot"]["agent_instructions"])
+
     def test_voice_mode_routes_to_native_codex_session(self):
         self.assertEqual(self.request("/api/sessions", {"study": "dilemma", "runtime": "claude",
             "interaction_mode": "voice"}, "POST")[0], 400)
@@ -250,6 +262,38 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request(self.prefix+"/marks/"+m["id"],{"review":{"decision":"rejected"}},"PATCH")[0],409)
         self.assertEqual(self.request(self.prefix+"/advance",{"phase":"review"},"POST")[0],200)
         self.assertEqual(self.request(self.prefix+"/candidates/c_test",{"participant_response":{"answer":"yes"}},"PATCH")[0],400)
+
+    def test_highlights_api_persist_lock_and_export(self):
+        self.create(runtime="demo")
+        with server.LOCK:
+            s = self.store.load(self.sid)
+            ev = server.add_event(s, "assistant", "Consider the stakeholder you skipped.")
+            self.store.save(s)
+        self.request(self.prefix+"/advance", {"phase":"chat"}, "POST")
+        self.request(self.prefix+"/advance", {"phase":"post","text":"Final position with stakeholder"}, "POST")
+        _, view = self.request(self.prefix)
+        self.assertEqual(view["annotation_settings"]["highlights"]["max_chars"], server.annotations.ANNOTATION["highlights"]["max_chars"])
+        body = {"id":"h_0123456789abcdef","target":{"kind":"event","event_id":ev["id"]},"start":13,"end":24,"text":"stakeholder",
+                "note":"Hadn't thought of them","tags":["new angle"]}
+        code, h = self.request(self.prefix+"/highlights", body, "POST")
+        self.assertEqual(code, 201)
+        self.assertEqual(self.request(self.prefix+"/highlights", body, "POST"), (200, h))
+        self.assertEqual(self.request(self.prefix+"/highlights", {**body, "id":"h_aaaaaaaa", "text":"wrong"}, "POST")[0], 400)
+        code, w = self.request(self.prefix+"/highlights", {"target":{"kind":"writing","writing":"post"},"start":20,"end":31,"text":"stakeholder"}, "POST")
+        self.assertEqual(code, 201)
+        self.assertEqual(self.request(self.prefix+"/highlights/"+h["id"], {"expected_version":1,"tags":["new angle","pushback"]}, "PATCH")[1]["version"], 2)
+        self.assertEqual(self.request(self.prefix+"/highlights/"+h["id"], {"expected_version":1,"note":"stale"}, "PATCH")[0], 409)
+        self.assertEqual(self.request(self.prefix+"/tag-suggestions")[1], ["new angle", "pushback"])
+        stored = self.store.load(self.sid)["highlights"]
+        self.assertEqual([x["id"] for x in stored], [h["id"], w["id"]])
+        self.assertEqual(len(self.store.versions(self.sid, "highlight", h["id"])), 2)
+        self.assertEqual(self.request(self.prefix+"/review/complete-independent", {}, "POST")[0], 200)
+        self.assertEqual(self.request(self.prefix+"/highlights/"+h["id"], {"expected_version":2,"note":"late"}, "PATCH")[0], 409)
+        with urlopen(self.base+"/api/export/highlights.csv", timeout=5) as response:
+            rows = response.read().decode()
+        self.assertIn("Hadn't thought of them", rows)
+        self.assertIn("new angle|pushback", rows)
+        self.assertEqual(rows.count(self.sid), 2)
 
     def test_manual_judge_override_for_demo_and_no_regex_endpoints(self):
         self.create(runtime="demo")

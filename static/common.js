@@ -6,7 +6,7 @@ export const api = async (method, url, body, headers = {}, options = {}) => {
   else if (body !== undefined) { opts.body = JSON.stringify(body); opts.headers["Content-Type"] = "application/json"; }
   const res = await fetch(url, opts);
   const data = res.headers.get("content-type")?.includes("json") ? await res.json() : await res.text();
-  if (!res.ok) throw new Error(data?.error || res.statusText);
+  if (!res.ok) throw Object.assign(new Error(data?.error || res.statusText), { status: res.status });
   return data;
 };
 
@@ -58,6 +58,8 @@ export function renderText(text) {
     return `<p>${inline(b).replace(/\n/g, "<br>")}</p>`;
   }).join("");
 }
+// Display-only text without the Markdown markers renderText turns into formatting.
+export const plainText = (text) => String(text ?? "").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1");
 const inline = (s) => s.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 
 export function toast(msg) {

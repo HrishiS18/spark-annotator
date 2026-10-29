@@ -10,6 +10,7 @@ let cfg, S, study;
 let busy = false;
 let pollTimer = null;
 let eventStream = null;
+let plannedReconnect = false;
 let connecting = false;
 let pendingMessage = null;
 let workspaceRefresh = null;
@@ -92,6 +93,7 @@ function route() {
   $("#composer-context").classList.add("hidden");
   $("#add-file").classList.add("hidden");
   $("#fab").classList.add("hidden");
+  paintBookmarkStatus();
   $("#top-actions").innerHTML = "";
   $("#top-runtime").innerHTML = "";
   if (S.phase !== "chat") { voiceClient?.closeLocal(); voiceClient = null; }
@@ -436,7 +438,9 @@ function startStream() {
     if (atBottom) scrollBottom();
     $("#stream-status")?.remove();
   });
+  eventStream.addEventListener("cycle", () => { plannedReconnect = true; });
   eventStream.onerror = () => {
+    if (plannedReconnect) { plannedReconnect = false; return; }
     if (!$("#stream-status")) panelNotice("Connection interrupted; reconnecting. Saved messages are retained.");
   };
 }
@@ -542,14 +546,27 @@ function paintBookmarkStatus() {
     status.setAttribute("aria-live", "polite"); $("#fab").after(status);
   }
   if (!status) return;
+  if (S.phase !== "chat" && !pending.length) { status.textContent = ""; return; }
   status.textContent = pending.length ? bookmarkOutbox.storageAvailable
     ? `${pending.length} saved on this device · ${pending.some(r => r.state === "failed") ? "retrying sync" : "syncing"}`
     : "Not saved to this device. Keep this tab open while syncing." : S.marks.length && document.body.dataset.voiceActive !== "true" ? "Bookmarks saved" : "";
 }
 
-function createMark({ event_id = null, anchor = "timestamp", quote = null, source = "overlay" }) {
+// Rendered message HTML differs from the stored text, so offsets come from a
+// unique match in the stored text. Ambiguous or reformatted text keeps the quote only.
+function liveQuoteSelection(eventId, text) {
+  if (!S.annotation_settings?.highlights?.live_selection_offsets) return null;
+  const source = S.events.find(e => e.id === eventId)?.text || "";
+  const at = source.indexOf(text);
+  if (at < 0 || source.indexOf(text, at + 1) >= 0) return null;
+  const start = Array.from(source.slice(0, at)).length;
+  return { event_id: eventId, start, end: start + Array.from(text).length, text };
+}
+
+function createMark({ event_id = null, anchor = "timestamp", quote = null, source = "overlay", quote_selection = null }) {
   if (!bookmarkOutbox) return;
   const payload = { event_id, anchor, quote, source, client_t: Date.now(), phase_at_click: S.phase,
+                    ...(quote_selection ? { quote_selection } : {}),
                     draft_len: $("#input").value.length, exposure: captureExposure(S, $("#content"), event_id) };
   const m = bookmarkOutbox.create(payload);
   if (!S.marks.some(x => x.id === m.id)) S.marks.push(m);
@@ -588,7 +605,7 @@ document.addEventListener("mouseup", () => setTimeout(() => {
   if (S?.phase !== "chat") return;
   const sel = window.getSelection();
   const text = sel?.toString().trim();
-  if (!text || text.length < 3) return;
+  if (!text || Array.from(text).length < (S.annotation_settings?.highlights?.live_selection_min_chars ?? 1)) return;
   const msg = sel.anchorNode?.parentElement?.closest(".msg");
   if (!msg || msg !== sel.focusNode?.parentElement?.closest(".msg")) return;
   const r = sel.getRangeAt(0).getBoundingClientRect();
@@ -598,7 +615,7 @@ document.addEventListener("mouseup", () => setTimeout(() => {
   chip.style.left = Math.min(window.innerWidth - 120, r.left + r.width / 2 - 45) + "px";
   chip.style.top = Math.max(8, r.top - 40) + "px";
   chip.onmousedown = (ev) => ev.preventDefault();
-  chip.onclick = () => { chip.remove(); createMark({ event_id: msg.dataset.id, anchor: "selection", quote: text }); sel.removeAllRanges(); };
+  chip.onclick = () => { chip.remove(); createMark({ event_id: msg.dataset.id, anchor: "selection", quote: text, quote_selection: liveQuoteSelection(msg.dataset.id, text) }); sel.removeAllRanges(); };
   document.body.appendChild(chip);
 }, 0));
 

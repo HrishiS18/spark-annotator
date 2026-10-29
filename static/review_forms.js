@@ -1,6 +1,7 @@
-import { api, esc, $, $$ } from "/static/common.js";
+import { api, esc, $, $$, plainText } from "/static/common.js";
 
 const controllers = new Set();
+const CONVERSATION_ROLES = ["user", "assistant", "partner"];
 const readLocal = key => { try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; } };
 const writeLocal = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };
 const removeLocal = key => { try { localStorage.removeItem(key); } catch {} };
@@ -15,8 +16,9 @@ export function annotationFormHTML(cfg, m, events) {
   const draft = m.review_draft || m.review || {};
   const select = (field, label, rows) => `<label class="field"><span>${label}</span><select data-f="${field}">
     <option value="">Optional / unsure</option>${rows.map(([key, title]) => `<option value="${key}" ${String(draft[field]) === String(key) ? "selected" : ""}>${esc(title)}</option>`).join("")}</select></label>`;
-  const options = `<option value="">Timestamp only / while composing</option>` + events.filter(e => e.role !== "thinking").map((e, i) =>
-    `<option value="${e.id}">${i + 1}. ${esc(e.role)} — ${esc(e.text.slice(0, 65))}</option>`).join("");
+  let turn = 0;
+  const options = `<option value="">Timestamp only / while composing</option>` + events.filter(e => e.role !== "thinking").map(e =>
+    `<option value="${e.id}">${CONVERSATION_ROLES.includes(e.role) ? `${++turn}. ${esc(e.role)}` : `↳ ${esc(e.role.replace("_", " "))}`} — ${esc(plainText(e.text).slice(0, 65))}</option>`).join("");
   return `<div class="annot">
     <div class="qlabel">Did anything about this moment change how you thought about the task?</div>
     <div class="chips" data-group="decision">
@@ -29,6 +31,7 @@ export function annotationFormHTML(cfg, m, events) {
       <div class="two"><label class="field"><span>From</span><select data-start>${options}</select></label>
       <label class="field"><span>Through</span><select data-end>${options}</select></label></div>
       <div class="quote-context" data-quote-context></div>
+      <div class="linked-highlights" data-linked-highlights></div>
       <button class="btn btn-sm btn-ghost hidden" data-clear-quote>Clear highlighted text</button>
       <div class="passage-context" data-context></div>
     </div>
@@ -76,7 +79,7 @@ export function wireAnnotationForm(root, m, { sid, events, locked = false, onSav
   const context = () => {
     const a = events.findIndex(e => e.id === start), b = events.findIndex(e => e.id === end);
     const selected = a >= 0 && b >= a ? events.slice(a, b + 1) : [];
-    $('[data-context]', root).innerHTML = selected.map(e => `<details ${selected.length === 1 ? "open" : ""}><summary>${esc(e.role)} · ${esc(e.text.slice(0, 80))}</summary><pre>${esc(e.text)}</pre></details>`).join("") || `<p class="small muted">Choose the relevant message or passage on the left, or leave this as a timestamp-only moment.</p>`;
+    $('[data-context]', root).innerHTML = selected.map(e => `<details ${selected.length === 1 ? "open" : ""}><summary>${esc(e.role)} · ${esc(plainText(e.text).slice(0, 80))}</summary><pre>${esc(plainText(e.text))}</pre></details>`).join("") || `<p class="small muted">Choose the relevant message or passage on the left, or leave this as a timestamp-only moment.</p>`;
     $('[data-quote-context]', root).innerHTML = quoteSelection
       ? `<span class="small muted">Highlighted text from ${esc(events.find(e => e.id === quoteSelection.event_id)?.role || 'message')}:</span><blockquote>${esc(quoteSelection.text)}</blockquote>`
       : m.quote && !quoteDirty ? `<span class="small muted">Text selected during the conversation:</span><blockquote>${esc(m.quote)}</blockquote>` : '';
@@ -178,9 +181,15 @@ export function wireAnnotationForm(root, m, { sid, events, locked = false, onSav
     submit: () => save(true),
     needsSave: () => !locked && (blocked || !!operation || dirty),
     selectPassage(a, b = a) { if (locked) return; start = a; end = b; $('[data-start]', root).value = a; $('[data-end]', root).value = b; changed(); context(); },
-    selectQuote(selection) { if (locked) return; quoteSelection = selection; quoteDirty = true; start = end = selection.event_id;
+    selectQuote(selection) {
+      if (locked) return;
+      quoteSelection = selection; quoteDirty = true;
+      const at = events.findIndex(e => e.id === selection.event_id);
+      const a = events.findIndex(e => e.id === start), b = events.findIndex(e => e.id === end);
+      if (!(a >= 0 && b >= a && at >= a && at <= b)) start = end = selection.event_id;  // keep a passage that already contains it
       $('[data-start]', root).value = start; $('[data-end]', root).value = end; changed(); context(); },
     startId: () => start,
+    hasQuote: () => !!(quoteSelection || (m.quote && !quoteDirty)),
     lock() { locked = true; clearTimeout(timer); root.closest('.review-card')?.classList.add('read-only'); $$('.annot button,.annot input,.annot textarea,.annot select', root).forEach(n => n.disabled = true); status('Review locked'); },
     dispose() { clearTimeout(timer); controllers.delete(controller); }
   };

@@ -145,7 +145,7 @@ def create_session(body, allow_legacy=False):
         "external": bool(study.get("external")),
         "phase_order": order, "phase": order[0],
         "phases": {p: {"minutes": study["phases"].get(p)} for p in order},
-        "writing": {}, "events": [], "marks": [], "candidates": [],
+        "writing": {}, "events": [], "marks": [], "highlights": [], "candidates": [],
         "detection": None, "trace": None, "codes": {}, "imports": [],
         "recording": None, "parse_turns": [],
         "schema_version": 2, "analysis_runs": [],
@@ -159,6 +159,8 @@ def create_session(body, allow_legacy=False):
         s["prompt"] = dict(prompt, text=body["task"].strip()[:2000])
     s["config_snapshot"] = {"study": copy.deepcopy(study), "task": copy.deepcopy(s["prompt"]),
                             "persona": copy.deepcopy(PERSONAS[persona]), "taxonomy": copy.deepcopy(TAXONOMY),
+                            "annotation": annotations.settings_for_study(study),
+                            "agent_instructions": (study.get("agent_instructions") or "").replace("{task}", s["prompt"]["text"]) or None,
                             "runtime": copy.deepcopy(s["runtime"])}
     s["phases"][order[0]]["started_at"] = iso
     save(s)
@@ -405,6 +407,7 @@ def summary_row(s):
         "study": s["study"], "prompt": s["prompt"]["title"], "persona": s["persona"],
         "condition": s["condition"], "room": s.get("room"), "phase": s["phase"],
         "events": len(s["events"]), "marks": len(marks),
+        "highlights": sum(not h.get("deleted") for h in s.get("highlights", [])),
         "reviewed": sum(1 for m in marks if m.get("review")),
         "candidates": sum(c.get("source") == "judge" for c in s["candidates"]),
         "judge_status": (s.get("judge") or {}).get("status", "not_run"),
@@ -425,6 +428,28 @@ def _offset(s, item):
     return round(t - rec["started_t"], 1) if t is not None and rec.get("started_t") else None
 
 
+
+
+def highlights_csv():
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["session_id", "participant_id", "study", "prompt_id", "persona", "condition", "interaction_mode",
+                "highlight_id", "created_at", "updated_at", "phase", "source", "target_kind", "event_id", "event_role",
+                "field", "writing", "start", "end", "text", "note", "tags", "mark_id", "mark_source", "mark_decision",
+                "candidate_id", "in_independent_pass", "version", "deleted"])
+    for s in all_sessions():
+        ev = {e["id"]: e for e in s["events"]}
+        marks = {m["id"]: m for m in s["marks"]}
+        independent = set((s.get("independent_review") or {}).get("highlight_ids", []))
+        for h in s.get("highlights", []):
+            target, m = h["target"], marks.get(h.get("mark_id")) or {}
+            w.writerow([s["id"], s["participant_id"], s["study"], s["prompt"]["id"], s["persona"], s["condition"],
+                        s.get("interaction_mode", "text"), h["id"], h["created_at"], h.get("updated_at"), h["phase"],
+                        h["source"], target["kind"], target.get("event_id"), (ev.get(target.get("event_id")) or {}).get("role"),
+                        target.get("field"), target.get("writing"), h["start"], h["end"], h["text"], h["note"],
+                        "|".join(h["tags"]), h.get("mark_id"), m.get("source"), (m.get("review") or {}).get("decision"),
+                        h.get("candidate_id"), h["id"] in independent, h["version"], h["deleted"]])
+    return buf.getvalue()
 
 
 def marks_csv():
@@ -692,6 +717,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(b": heartbeat\n\n")
                     self.wfile.flush()
                 time.sleep(0.15)
+            # A planned close: the browser reconnects automatically and must
+            # not report this to the participant as a connection problem.
+            self.wfile.write(b"event: cycle\ndata: {}\n\n")
+            self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -739,6 +768,8 @@ class Handler(BaseHTTPRequestHandler):
         if api[:1] == ["export"] and method == "GET":
             if api[1:] == ["marks.csv"]:
                 return self._send(200, marks_csv(), "text/csv", {"Content-Disposition": "attachment; filename=marks.csv"})
+            if api[1:] == ["highlights.csv"]:
+                return self._send(200, highlights_csv(), "text/csv", {"Content-Disposition": "attachment; filename=highlights.csv"})
             if api[1:] == ["candidates.csv"]:
                 return self._send(200, candidates_csv(), "text/csv", {"Content-Disposition": "attachment; filename=candidates.csv"})
 
@@ -823,6 +854,7 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and not rest:
             s = load(sid)
             s["analysis"] = analysis(s)
+            s["annotation_settings"] = annotations.settings(s)
             if (query.get("view") or [""])[0] != "researcher" and not s.get("independent_review"):
                 s["candidates"] = []
                 s["judge"] = {"status": (s.get("judge") or {}).get("status", "not_run")}
@@ -995,6 +1027,31 @@ class Handler(BaseHTTPRequestHandler):
                 annotations.patch_mark(s, m, body, {t["key"] for t in TAXONOMY["types"]})
                 save(s)
             return self._send(200, m)
+
+        if method == "POST" and rest == ["highlights"]:
+            with LOCK:
+                s = load(sid)
+                hid = body.get("id")
+                if hid is not None and not re.fullmatch(r"h_[0-9a-f]{8,32}", hid):
+                    raise ValueError("bad highlight id")
+                existing = next((h for h in s.get("highlights", []) if hid and h["id"] == hid), None)
+                if existing:  # idempotent retry
+                    return self._send(200, existing)
+                h = annotations.create_highlight(s, body, hid or new_id("h"))
+                save(s)
+            return self._send(201, h)
+
+        if method == "PATCH" and len(rest) == 2 and rest[0] == "highlights":
+            with LOCK:
+                s = load(sid)
+                h = next(h for h in s.get("highlights", []) if h["id"] == rest[1])
+                annotations.patch_highlight(s, h, body)
+                save(s)
+            return self._send(200, h)
+
+        if method == "GET" and rest == ["tag-suggestions"]:
+            s = load(sid)
+            return self._send(200, annotations.tag_suggestions(all_sessions(), s))
 
         if method == "POST" and rest == ["review", "complete-independent"]:
             with LOCK:

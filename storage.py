@@ -25,7 +25,7 @@ def encode(value):
 
 
 class Store:
-    COLLECTIONS = {"events", "marks", "candidates", "codes", "analysis_runs",
+    COLLECTIONS = {"events", "marks", "highlights", "candidates", "codes", "analysis_runs",
                    "researcher_annotations", "_revision", "analysis"}
 
     def __init__(self, path, write_lock=None):
@@ -105,6 +105,7 @@ class Store:
             m["review"] = reviews.get(m["id"])
             if m["id"] in drafts:
                 m["review_draft"] = drafts[m["id"]]
+        s["highlights"] = by_kind.get("highlight", [])
         responses = {r["id"]: r["response"] for r in by_kind.get("candidate_response", [])}
         s["candidates"] = by_kind.get("prediction", [])
         for c in s["candidates"]:
@@ -142,7 +143,7 @@ class Store:
     def _save(self, db, session):
         s = copy.deepcopy(session)
         sid = s["id"]
-        for key in ("events", "marks", "candidates"):
+        for key in ("events", "marks", "highlights", "candidates"):
             ids = [record["id"] for record in s.get(key, [])]
             if len(ids) != len(set(ids)):
                 raise ValueError(f"Duplicate {key} IDs; no records were saved.")
@@ -156,7 +157,7 @@ class Store:
                    (sid, revision, encode(metadata), revision, encode(metadata)))
         # Predictions from a rerun are different records, never a rewrite of a
         # participant's answer to an earlier prediction.
-        for kind in ("event", "bookmark", "prediction", "review", "review_draft", "candidate_response"):
+        for kind in ("event", "bookmark", "highlight", "prediction", "review", "review_draft", "candidate_response"):
             db.execute("UPDATE records SET active=0 WHERE session_id=? AND kind=?", (sid, kind))
         for i, e in enumerate(s.get("events", [])):
             self._record(db, sid, "event", e["id"], e, i)
@@ -167,6 +168,8 @@ class Store:
                 self._record(db, sid, "review", m["id"], {"id": m["id"], "review": m["review"]}, i)
             if m.get("review_draft") is not None:
                 self._record(db, sid, "review_draft", m["id"], {"id": m["id"], "review_draft": m["review_draft"]}, i)
+        for i, h in enumerate(s.get("highlights", [])):
+            self._record(db, sid, "highlight", h["id"], h, i)
         for i, c in enumerate(s.get("candidates", [])):
             self._record(db, sid, "prediction", c["id"],
                          {k: v for k, v in c.items() if k != "participant_response"}, i)

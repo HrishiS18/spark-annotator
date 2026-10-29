@@ -1,11 +1,12 @@
 {
-  "_comment": "Study templates. Each session picks one study + one prompt (dilemma/task) + a persona + a condition. Phase durations are in minutes; timers are soft (participants are told time is up but are not cut off) unless enforce_timers is true. Prompts here are written for this platform; use tools/import_dilemmas.py to load Scruples / Moral Dilemma Dataset / r/Advice items.",
+  "_comment": "Study templates. Each session picks one study + one prompt (dilemma/task) + a persona + a condition. Phase durations are in minutes; timers are soft (participants are told time is up but are not cut off) unless enforce_timers is true. Prompts here are written for this platform; use tools/import_dilemmas.py to load Scruples / Moral Dilemma Dataset / r/Advice items. Optional agent_instructions replaces the default 'work on TASK.md' instruction given to the AI agent; {task} is replaced with the session's question.",
   "studies": [
     {
       "key": "dilemma",
       "label": "Moral dilemma",
       "default_persona": "partner",
       "phases": {"pre": 10, "chat": 20, "post": 10},
+      "agent_instructions": "The participant's question is: {task}\nDiscuss it with them directly in conversation. Everything you need is in this conversation, so reply without opening, searching or creating files unless the participant asks you to.",
       "enforce_timers": false,
       "show_candidates_in_review": true,
       "pre_instructions": "Read the question below. Without any AI help, write your current position and the main reasons for it. There are no right answers; we're interested in how you think.",
