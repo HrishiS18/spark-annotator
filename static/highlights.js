@@ -218,9 +218,12 @@ export class Highlighter {
       this.timers.set(id, setTimeout(() => { this.timers.delete(id); this.saveNote(id); }, cfg.note_autosave_ms));
     });
     const input = $("[data-tag-input]", card);
-    const addTags = () => {
-      const fresh = input.value.split(",").map(t => t.trim()).filter(Boolean);
-      input.value = "";
+    // `keep` leaves the text after the last comma in the field while typing.
+    const addTags = (keep = false) => {
+      const parts = input.value.split(",");
+      const rest = keep ? parts.pop() : "";
+      const fresh = parts.map(t => t.trim()).filter(Boolean);
+      input.value = rest;
       if (!fresh.length) return;
       this.patch(id, current => {
         const added = fresh.filter(t => !current.tags.some(c => c.toLowerCase() === t.toLowerCase()));
@@ -231,7 +234,10 @@ export class Highlighter {
         this.paintSuggestions();
       });
     };
-    input.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === ",") { e.preventDefault(); addTags(); } });
+    // Commas are read from the text, not key events: phone keyboards and
+    // pasted text do not reliably report a comma key.
+    input.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); addTags(); } });
+    input.addEventListener("input", () => { if (input.value.includes(",")) addTags(true); });
     input.addEventListener("change", () => { if (input.value.trim()) addTags(); });
     $("[data-tags]", card).addEventListener("click", e => {
       const tag = e.target.closest("[data-remove-tag]")?.dataset.removeTag;
