@@ -6,7 +6,22 @@ const status = $("#runtime-status");
 const permissionNote = $("#permission-note");
 const claudeSetup = $("#claude-setup");
 let starting = false;
-if (new URLSearchParams(location.search).has("completed")) $("#home-complete").classList.remove("hidden");
+const query = new URLSearchParams(location.search);
+if (query.has("completed")) $("#home-complete").classList.remove("hidden");
+const completedSid = query.get("archive");
+if (query.has("completed") && /^s_[0-9a-f]{8}$/.test(completedSid || "")) {
+  const notice = $("#home-complete");
+  const link = document.createElement("a");
+  link.href = `/api/sessions/${completedSid}/export.zip`;
+  link.download = `spark-session-${completedSid}.zip`;
+  link.textContent = "Download ZIP";
+  notice.append(document.createTextNode(" Your session ZIP should download automatically. If it doesn't, "), link);
+  const key = `spark-archive-download:${completedSid}`;
+  let start = true;
+  try { start = sessionStorage.getItem(key) !== "started"; if (start) sessionStorage.setItem(key, "started"); }
+  catch { /* The manual link still works when browser storage is unavailable. */ }
+  if (start) requestAnimationFrame(() => link.click());
+}
 
 function modelLabel(model) {
   if (!model) return "Study model";
@@ -22,11 +37,12 @@ function notice(text, error = false) {
 
 async function setup() {
   const cfg = await config();
-  const studies = cfg.studies.filter(study => !study.external);
+  const studies = cfg.studies.filter(study => study.key === "dilemma");
   if (!studies.length) throw new Error("No studies are configured. Ask the researcher to add a task.");
   form.study.innerHTML = studies.map(study => `<option value="${esc(study.key)}">${esc(study.label)}</option>`).join("");
-  form.persona.innerHTML = cfg.personas.map(persona => `<option value="${esc(persona.key)}">${esc(persona.label)}</option>`).join("");
+  form.persona.innerHTML = cfg.personas.filter(persona => persona.key !== "trading").map(persona => `<option value="${esc(persona.key)}">${esc(persona.label)}</option>`).join("");
 
+  const voiceNote = $("#voice-note").textContent;
   function syncRuntime() {
     const human = form.condition.value === "human";
     const claude = !human && form.runtime.value === "claude";
@@ -34,6 +50,9 @@ async function setup() {
     $("#interaction-field").classList.toggle("hidden", !codex);
     form.interaction_mode.disabled = !codex;
     if (!codex) form.interaction_mode.value = "text";
+    $("#voice-note").classList.toggle("hidden", form.interaction_mode.value !== "voice");
+    const measures = cfg.voice_measures?.[form.study.value];
+    $("#voice-note").textContent = voiceNote + (measures?.acoustic ? ` ${measures.setup_notice}` : "");
     document.body.dataset.agent = human ? "human" : form.runtime.value;
     claudeSetup.classList.toggle("hidden", !claude);
     if (claude) $("#claude-setup-model").textContent = modelLabel(cfg.runtimes?.claude?.model);
@@ -75,9 +94,10 @@ async function setup() {
     syncRuntime();
   }
 
-  form.study.onchange = syncStudy;
+  form.study.onchange = () => { syncStudy(); syncRuntime(); };
   form.condition.onchange = syncPartner;
   form.runtime.onchange = syncRuntime;
+  form.interaction_mode.addEventListener("change", syncRuntime);
   syncStudy(); syncPartner();
   form.onsubmit = async event => {
     event.preventDefault();

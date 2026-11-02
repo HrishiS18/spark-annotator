@@ -1,0 +1,97 @@
+{
+  "_comment": "The standalone highlight workflow is retired for new sessions; existing records and exports remain readable. Each session snapshots its settings. Guided review shows moments, optional suggestions, and voice measures without a Highlights step. Set review_steps.enabled to false for the single-page review; the researcher view always uses the single page.",
+  "highlights": {
+    "enabled": false,
+    "standalone": true,
+    "live_selection_offsets": true,
+    "live_selection_min_chars": 3,
+    "max_chars": 2000,
+    "note_max_chars": 2000,
+    "max_tags": 8,
+    "tag_max_chars": 40,
+    "tag_suggestions": "participant",
+    "candidate_highlights": true,
+    "note_autosave_ms": 700,
+    "targets": {
+      "event_roles": [
+        "user",
+        "assistant",
+        "partner",
+        "tool_call",
+        "tool_result"
+      ],
+      "event_fields": [
+        "text",
+        "output"
+      ],
+      "writing": [
+        "pre",
+        "post"
+      ]
+    }
+  },
+  "wording": {
+    "highlight_action": "Highlight",
+    "attach_action": "Add to open moment",
+    "new_moment_action": "New moment",
+    "adjust_action": "Use as new boundaries",
+    "panel_title": "Your highlights",
+    "panel_hint": "Select any words or passages that stood out, in the conversation or in your own answers. Add a note in your own words. You don't need to decide whether it was an insight.",
+    "panel_empty": "No highlights yet. Select text on the left to add one.",
+    "note_label": "Note",
+    "note_placeholder": "What stood out about this?",
+    "tags_label": "Tags",
+    "tags_hint": "A few words describing what happened for you. Press Enter or comma after each.",
+    "link_label": "Part of moment",
+    "link_none": "Not part of a moment",
+    "linked_title": "Highlighted text in this moment",
+    "adjust_button": "Adjust",
+    "adjust_hint": "Select the new text on the left, then choose \"Use as new boundaries\".",
+    "remove_button": "Remove",
+    "writing_title": "Your written answers",
+    "writing_labels": {
+      "pre": "Before the conversation",
+      "post": "After the conversation"
+    },
+    "candidate_label": "Suggested passage",
+    "moment_label": "Moment",
+    "output_label": "output"
+  },
+  "review_steps": {
+    "enabled": true,
+    "wording": {
+      "steps": {
+        "moments": {
+          "label": "Your moments",
+          "todo": "Look at each moment you marked and say whether it changed your thinking. Nothing here is graded."
+        },
+        "highlights": {
+          "label": "Highlights",
+          "todo": "Optional: select any words in the conversation or your answers that stood out. When you're done, lock your answers."
+        },
+        "suggestions": {
+          "label": "Suggestions",
+          "todo": "Optional: say whether the AI's suggested moments match anything you noticed. Your own answers are already locked."
+        },
+        "voice": {
+          "label": "How you spoke",
+          "todo": "Have a look at how you spoke compared with your usual, then finish.",
+          "locked": "This appears after you lock your answers about your moments."
+        }
+      },
+      "all_confirmed": "All your moments are confirmed. Next, look for anything else that stood out.",
+      "view_only": "Your answers are locked. You can look back at them but not change them.",
+      "done": "Your answers are saved. Thank you for taking part.",
+      "moment_of": "Moment {i} of {n}",
+      "no_moments": "You didn't mark any moments. You can add one you remember below.",
+      "previous": "Previous",
+      "next": "Next",
+      "back": "Back",
+      "next_step": "Next: {label}",
+      "lock": "I'm done, lock my answers",
+      "finish": "Finish and return home",
+      "answers_title": "Your answers before and after",
+      "select_hint": "Select words in the conversation to mark a moment"
+    }
+  }
+}

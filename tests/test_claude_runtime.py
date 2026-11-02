@@ -40,7 +40,11 @@ class ClaudeRuntimeTests(unittest.TestCase):
         w=self.manager.get(self.sid)
         self.manager.upload(self.sid,"input.txt",b"Synthetic task file")
         user=w.message(text,cid)
-        s=self.wait(lambda s:bool(s["runtime"]["approvals"]))
+        # The SDK permission callback can arrive before the preceding streamed
+        # text and tool-use events have been persisted.
+        s=self.wait(lambda s:bool(s["runtime"]["approvals"])
+                    and any(e["role"]=="assistant" and "inspect" in e["text"] for e in s["events"])
+                    and any(e["role"]=="tool_call" for e in s["events"]))
         return w,user,s
 
     def test_streaming_tools_approval_idempotency_and_resume(self):

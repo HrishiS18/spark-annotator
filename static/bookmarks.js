@@ -40,7 +40,7 @@ export class BookmarkOutbox {
         try {
           const mark = await api("POST", `/api/sessions/${this.sid}/marks`, body, {}, { signal: abort.signal });
           if (this.rows[id]?.body.client_version === body.client_version) delete this.rows[id];
-          this.persist(); this.onChange(this.pending(), mark);
+          this.persist(); this.onChange(this.pending(), mark, body.id);
         } catch (error) {
           if (this.rows[id]) { this.rows[id].state = "failed"; this.rows[id].error = error.message; }
           this.persist(); break;
@@ -57,10 +57,11 @@ export class BookmarkOutbox {
 
 export function captureExposure(session, container, anchorId = null) {
   const bounds = container?.getBoundingClientRect();
+  const anchors = new Set(Array.isArray(anchorId) ? anchorId : anchorId ? [anchorId] : []);
   const rows = [];
   for (const node of container?.querySelectorAll(".msg[data-id]") || []) {
     const rect = node.getBoundingClientRect();
-    const anchored = node.dataset.id === anchorId;
+    const anchored = anchors.has(node.dataset.id);
     if (!anchored && bounds && (rect.bottom <= bounds.top || rect.top >= bounds.bottom)) continue;
     const event = session.events.find(e => e.id === node.dataset.id);
     if (!event || event.id === "pending") continue;
@@ -70,6 +71,6 @@ export function captureExposure(session, container, anchorId = null) {
       rendered_output: toolOpen ? event.output || "" : "", status: event.status || "", tool_open: toolOpen,
       partially_in_view: !!bounds && (rect.top < bounds.top || rect.bottom > bounds.bottom) });
   }
-  const relevant = anchorId ? rows.filter(r => r.event_id === anchorId) : rows.slice(-6);
+  const relevant = anchors.size ? rows.filter(r => anchors.has(r.event_id)).slice(0, 24) : rows.slice(-6);
   return { surface: "integrated", events: relevant };
 }

@@ -16,12 +16,15 @@ import json
 import mimetypes
 import os
 import re
+import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import judge
@@ -31,6 +34,7 @@ import transcript
 import storage
 import annotations
 import judge_validation
+import voice_measures
 from codex_runtime import RuntimeUnavailable
 from agent_runtime import RuntimeManager, AGENT_KINDS
 
@@ -145,7 +149,7 @@ def create_session(body, allow_legacy=False):
         "external": bool(study.get("external")),
         "phase_order": order, "phase": order[0],
         "phases": {p: {"minutes": study["phases"].get(p)} for p in order},
-        "writing": {}, "events": [], "marks": [], "candidates": [],
+        "writing": {}, "events": [], "marks": [], "highlights": [], "voice_samples": [], "candidates": [],
         "detection": None, "trace": None, "codes": {}, "imports": [],
         "recording": None, "parse_turns": [],
         "schema_version": 2, "analysis_runs": [],
@@ -159,6 +163,9 @@ def create_session(body, allow_legacy=False):
         s["prompt"] = dict(prompt, text=body["task"].strip()[:2000])
     s["config_snapshot"] = {"study": copy.deepcopy(study), "task": copy.deepcopy(s["prompt"]),
                             "persona": copy.deepcopy(PERSONAS[persona]), "taxonomy": copy.deepcopy(TAXONOMY),
+                            "annotation": annotations.settings_for_study(study),
+                            "voice_measures": voice_measures.settings_for_study(study),
+                            "agent_instructions": (study.get("agent_instructions") or "").replace("{task}", s["prompt"]["text"]) or None,
                             "runtime": copy.deepcopy(s["runtime"])}
     s["phases"][order[0]]["started_at"] = iso
     save(s)
@@ -405,6 +412,7 @@ def summary_row(s):
         "study": s["study"], "prompt": s["prompt"]["title"], "persona": s["persona"],
         "condition": s["condition"], "room": s.get("room"), "phase": s["phase"],
         "events": len(s["events"]), "marks": len(marks),
+        "highlights": sum(not h.get("deleted") for h in s.get("highlights", [])),
         "reviewed": sum(1 for m in marks if m.get("review")),
         "candidates": sum(c.get("source") == "judge" for c in s["candidates"]),
         "judge_status": (s.get("judge") or {}).get("status", "not_run"),
@@ -425,6 +433,28 @@ def _offset(s, item):
     return round(t - rec["started_t"], 1) if t is not None and rec.get("started_t") else None
 
 
+
+
+def highlights_csv():
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["session_id", "participant_id", "study", "prompt_id", "persona", "condition", "interaction_mode",
+                "highlight_id", "created_at", "updated_at", "phase", "source", "target_kind", "event_id", "event_role",
+                "field", "writing", "start", "end", "text", "note", "tags", "mark_id", "mark_source", "mark_decision",
+                "candidate_id", "in_independent_pass", "version", "deleted"])
+    for s in all_sessions():
+        ev = {e["id"]: e for e in s["events"]}
+        marks = {m["id"]: m for m in s["marks"]}
+        independent = set((s.get("independent_review") or {}).get("highlight_ids", []))
+        for h in s.get("highlights", []):
+            target, m = h["target"], marks.get(h.get("mark_id")) or {}
+            w.writerow([s["id"], s["participant_id"], s["study"], s["prompt"]["id"], s["persona"], s["condition"],
+                        s.get("interaction_mode", "text"), h["id"], h["created_at"], h.get("updated_at"), h["phase"],
+                        h["source"], target["kind"], target.get("event_id"), (ev.get(target.get("event_id")) or {}).get("role"),
+                        target.get("field"), target.get("writing"), h["start"], h["end"], h["text"], h["note"],
+                        "|".join(h["tags"]), h.get("mark_id"), m.get("source"), (m.get("review") or {}).get("decision"),
+                        h.get("candidate_id"), h["id"] in independent, h["version"], h["deleted"]])
+    return buf.getvalue()
 
 
 def marks_csv():
@@ -458,6 +488,34 @@ def marks_csv():
     return buf.getvalue()
 
 
+def voice_csv():
+    """One row per participant turn in voice sessions: timing, acoustics, and
+    each value relative to that participant's own typical turn."""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    acoustic = ["samples", "speech_s", "voiced_s", "pitch_hz", "pitch_range_st", "pitch_end_slope_st", "loudness_db",
+                "loudness_peak_db", "pause_count", "longest_pause_s", "syllable_rate", "overlap_s", "remote_gap_s",
+                "started_during_remote", "auto_gain_control"]
+    w.writerow(["session_id", "participant_id", "study", "prompt_id", "persona", "condition", "turn", "event_ids",
+                "start_ms", "end_ms", "gap_s", "gap_source", "transcript_gap_s", "duration_s", "words", "wpm", "fillers",
+                "filler_rate", "change_tokens", "agent_backchannels", "overlap"] + acoustic +
+               ["rel_gap_s", "rel_pitch_st", "rel_loudness_db", "rel_rate_pct", "pace_unit", "flags", "score", "text"])
+    for s in all_sessions():
+        if s.get("interaction_mode") != "voice":
+            continue
+        p = voice_measures.profile(s, get_store().realtime_feed(s["id"]))
+        for r in p["turns"]:
+            a, rel = r["acoustic"] or {}, r["relative"]
+            w.writerow([s["id"], s["participant_id"], s["study"], s["prompt"]["id"], s["persona"], s["condition"],
+                        r["index"], "|".join(r["event_ids"]), r["start_ms"], r["end_ms"], r["gap_s"], p["gap_source"],
+                        r["transcript_gap_s"], r["duration_s"], r["words"], r["wpm"], r["fillers"], r["filler_rate"],
+                        "|".join(r["change_tokens"]), r["agent_backchannels"], r["overlap"]] + [a.get(k) for k in acoustic] +
+                       [rel.get("gap_s"), rel.get("pitch_st"), rel.get("loudness_db"), rel.get("rate_pct"), p["pace_unit"],
+                        "|".join(f["key"] + (f"={f['value']}" if f["value"] is not None else "") for f in r["flags"]),
+                        r["score"], _quick(r["text"])])
+    return buf.getvalue()
+
+
 def candidates_csv():
     buf = io.StringIO()
     w = csv.writer(buf)
@@ -483,6 +541,72 @@ def candidates_csv():
                         (s["codes"].get(f"candidate:{c['id']}") or {}).get("label"), c.get("copying"), c.get("uptake"),
                         c.get("start_event_id"), c.get("end_event_id")])
     return buf.getvalue()
+
+
+def write_session_archive(s, output):
+    """Package one completed session, without native agent state or host secrets."""
+    sid = s["id"]
+    if s["phase"] != "done":
+        raise storage.ConflictError("Finish the session before downloading its archive")
+    s["analysis"] = analysis(s)
+    data_dir = get_store().path.parent
+    omitted = []
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        def write_json(name, value):
+            archive.writestr(name, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+        write_json("session.json", s)
+        archive.writestr("transcript.md", transcript.render_markdown(s, TAXONOMY))
+        archive.writestr("conversation/events.jsonl", "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in s["events"]))
+        for phase, name in (("pre", "before"), ("post", "after")):
+            archive.writestr(f"participant/{name}.txt", (s.get("writing", {}).get(phase) or {}).get("text", ""))
+        write_json("participant/moments.json", s["marks"])
+        write_json("participant/highlights-legacy.json", s.get("highlights", []))
+        write_json("analysis/judge-runs.json", s.get("analysis_runs", []))
+        archive.writestr("runtime/trace.jsonl", "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in s["runtime_trace"]))
+
+        recording = (s.get("recording") or {}).get("file")
+        if recording:
+            path = Path(RECORDINGS) / recording
+            if Path(recording).name == recording and recording.startswith(sid + ".") and path.is_file() and not path.is_symlink():
+                archive.write(path, f"recording/{recording}", compress_type=zipfile.ZIP_STORED)
+            else:
+                omitted.append("Recording referenced by session is missing or unsafe to include")
+
+        seen_uploads = set()
+        for item in s.get("imports", []):
+            uid = item.get("upload_id")
+            if not uid:
+                omitted.append(f"Raw import unavailable for legacy record: {item.get('file', 'unnamed')}")
+                continue
+            if uid in seen_uploads:
+                continue
+            seen_uploads.add(uid)
+            path = Path(UPLOADS) / uid
+            if not re.fullmatch(r"[0-9a-f]{12}", uid) or not path.is_file() or path.is_symlink():
+                omitted.append(f"Raw import missing or unsafe to include: {uid}")
+                continue
+            filename = Path(str(item.get("file") or "upload").replace("\\", "/")).name
+            archive.write(path, f"imports/{uid}/{filename if filename not in ('.', '..') else 'upload'}")
+
+        workspace = data_dir / "workspaces" / sid
+        if workspace.exists():
+            workspace_root = (data_dir / "workspaces").resolve()
+            if workspace.is_symlink() or not workspace.resolve().is_relative_to(workspace_root):
+                omitted.append("Task workspace path is unsafe to include")
+            else:
+                for path in sorted(workspace.rglob("*")):
+                    relative = path.relative_to(workspace)
+                    if ".runtime" in relative.parts or not path.is_file() or path.is_symlink():
+                        continue
+                    if not path.resolve().is_relative_to(workspace.resolve()):
+                        omitted.append(f"Workspace file is unsafe to include: {relative.as_posix()}")
+                        continue
+                    archive.write(path, f"workspace/{relative.as_posix()}")
+
+        write_json("manifest.json", {"format": "spark-session-archive/v1", "session_id": sid,
+                                     "created_at": now()[0], "included": archive.namelist(), "omitted": omitted,
+                                     "note": "Native agent .runtime state is excluded. Review workspace files and conversation data for sensitive information before sharing."})
 
 
 # --------------------------------------------------------------------------- HTTP
@@ -665,6 +789,27 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 pass  # the player cancels range requests while seeking
 
+    def _serve_archive(self, sid):
+        session = get_store().export(sid)
+        if session["phase"] != "done":
+            raise storage.ConflictError("Finish the session before downloading its archive")
+        with tempfile.TemporaryFile(dir=get_store().path.parent) as output:
+            write_session_archive(session, output)
+            size = output.tell()
+            output.seek(0)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="spark-session-{sid}.zip"')
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            try:
+                while chunk := output.read(1 << 20):
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
     # ---- routes
     def _stream(self, sid, query):
         load(sid)
@@ -692,6 +837,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(b": heartbeat\n\n")
                     self.wfile.flush()
                 time.sleep(0.15)
+            # A planned close: the browser reconnects automatically and must
+            # not report this to the participant as a connection problem.
+            self.wfile.write(b"event: cycle\ndata: {}\n\n")
+            self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -714,6 +863,9 @@ class Handler(BaseHTTPRequestHandler):
                 "runtime": get_runtime().status(),
                 "runtimes": get_runtime().statuses() if hasattr(get_runtime(),"statuses") else {"codex":get_runtime().status()},
                 "judge": {**judge.status(), "automatic": auto_judge_enabled()},
+                "voice_measures": {key: {"acoustic": cfg["enabled"] and cfg["acoustic"]["enabled"],
+                                         "setup_notice": cfg["wording"]["setup_notice"]}
+                                   for key, cfg in ((k, voice_measures.settings_for_study(st)) for k, st in STUDIES.items())},
             })
         if api == ["sessions"]:
             if method == "GET":
@@ -739,6 +891,10 @@ class Handler(BaseHTTPRequestHandler):
         if api[:1] == ["export"] and method == "GET":
             if api[1:] == ["marks.csv"]:
                 return self._send(200, marks_csv(), "text/csv", {"Content-Disposition": "attachment; filename=marks.csv"})
+            if api[1:] == ["highlights.csv"]:
+                return self._send(200, highlights_csv(), "text/csv", {"Content-Disposition": "attachment; filename=highlights.csv"})
+            if api[1:] == ["voice.csv"]:
+                return self._send(200, voice_csv(), "text/csv", {"Content-Disposition": "attachment; filename=voice.csv"})
             if api[1:] == ["candidates.csv"]:
                 return self._send(200, candidates_csv(), "text/csv", {"Content-Disposition": "attachment; filename=candidates.csv"})
 
@@ -823,6 +979,10 @@ class Handler(BaseHTTPRequestHandler):
         if method == "GET" and not rest:
             s = load(sid)
             s["analysis"] = analysis(s)
+            s["annotation_settings"] = annotations.settings(s)
+            s["voice_settings"] = voice_measures.settings(s)
+            # Raw browser samples are research data; the review reads the profile.
+            s["voice_sample_count"] = len(s.pop("voice_samples", []))
             if (query.get("view") or [""])[0] != "researcher" and not s.get("independent_review"):
                 s["candidates"] = []
                 s["judge"] = {"status": (s.get("judge") or {}).get("status", "not_run")}
@@ -855,6 +1015,8 @@ class Handler(BaseHTTPRequestHandler):
             s["analysis"] = analysis(s)
             return self._send(200, s, "application/json",
                               {"Content-Disposition": f"attachment; filename={sid}.json"})
+        if method == "GET" and rest == ["export.zip"]:
+            return self._serve_archive(sid)
 
         body = self._json() if method in ("POST", "PATCH") else {}
 
@@ -982,6 +1144,9 @@ class Handler(BaseHTTPRequestHandler):
                         existing["client_version"] = int(body.get("client_version", 1))
                     save(s)
                     return self._send(200, existing)
+                duplicate = annotations.duplicate_live_mark(s, body)
+                if duplicate:
+                    return self._send(200, duplicate)
                 if s.get("independent_review") and body.get("source") != "candidate_confirm":
                     raise ValueError("Independent review is locked; new moments must be recorded as follow-up suggestions")
                 m = annotations.create_mark(s, body, cid or new_id("m"))
@@ -996,10 +1161,61 @@ class Handler(BaseHTTPRequestHandler):
                 save(s)
             return self._send(200, m)
 
+        if method == "POST" and rest == ["highlights"]:
+            with LOCK:
+                s = load(sid)
+                hid = body.get("id")
+                if hid is not None and not re.fullmatch(r"h_[0-9a-f]{8,32}", hid):
+                    raise ValueError("bad highlight id")
+                existing = next((h for h in s.get("highlights", []) if hid and h["id"] == hid), None)
+                if existing:  # idempotent retry
+                    return self._send(200, existing)
+                h = annotations.create_highlight(s, body, hid or new_id("h"))
+                save(s)
+            return self._send(201, h)
+
+        if method == "PATCH" and len(rest) == 2 and rest[0] == "highlights":
+            with LOCK:
+                s = load(sid)
+                h = next(h for h in s.get("highlights", []) if h["id"] == rest[1])
+                annotations.patch_highlight(s, h, body)
+                save(s)
+            return self._send(200, h)
+
+        if method == "POST" and rest == ["voice-samples"]:
+            with LOCK:
+                s = load(sid)
+                added = voice_measures.add_samples(s, body, voice_measures.settings(s))
+                if added:
+                    save(s)
+            return self._send(200, {"added": [v["id"] for v in added]})
+
+        if method == "GET" and rest == ["voice-profile"]:
+            s = load(sid)
+            cfg = voice_measures.settings(s)
+            shown = s.get("voice_profile_shown")
+            if (query.get("view") or [""])[0] != "researcher":
+                if not voice_measures.visible_to_participant(s, cfg):
+                    return self._send(200, {"visible": False})
+                if shown:
+                    return self._send(200, {"visible": True, "shown_at": shown["at"], **shown["profile"]})
+            return self._send(200, {"visible": True, "shown_at": (shown or {}).get("at"),
+                                    **voice_measures.profile(s, get_store().realtime_feed(sid), cfg)})
+
+        if method == "GET" and rest == ["tag-suggestions"]:
+            s = load(sid)
+            return self._send(200, annotations.tag_suggestions(all_sessions(), s))
+
         if method == "POST" and rest == ["review", "complete-independent"]:
             with LOCK:
                 s = load(sid)
                 snapshot = annotations.complete_independent_review(s)
+                cfg = voice_measures.settings(s)
+                if voice_measures.visible_to_participant(s, cfg):
+                    # The voice data is final once the conversation ends, so this is
+                    # exactly what the participant is shown, kept even if settings change.
+                    s["voice_profile_shown"] = {"at": now()[0], "settings": cfg,
+                                                "profile": voice_measures.profile(s, get_store().realtime_feed(sid), cfg)}
                 save(s)
             return self._send(200, snapshot)
 
@@ -1054,7 +1270,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Integrated agent transcripts cannot be replaced with imported logs. Create an external session instead.")
                 imported = storage.import_events(s, events, name, bool(body.get("append")))
                 parsers.align_marks(s["marks"], imported)
-                s["imports"].append({"at": now()[0], "file": name, "members": members, "meta": meta,
+                s["imports"].append({"at": now()[0], "file": name, "upload_id": uid, "members": members, "meta": meta,
                                      "events": len(imported)})
                 save(s)
             ensure_judge(sid)

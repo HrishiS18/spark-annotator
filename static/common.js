@@ -6,7 +6,7 @@ export const api = async (method, url, body, headers = {}, options = {}) => {
   else if (body !== undefined) { opts.body = JSON.stringify(body); opts.headers["Content-Type"] = "application/json"; }
   const res = await fetch(url, opts);
   const data = res.headers.get("content-type")?.includes("json") ? await res.json() : await res.text();
-  if (!res.ok) throw new Error(data?.error || res.statusText);
+  if (!res.ok) throw Object.assign(new Error(data?.error || res.statusText), { status: res.status });
   return data;
 };
 
@@ -29,6 +29,9 @@ const PATHS = {
   sparkle: '<path d="M12 3.5 13.8 10l6.7 2-6.7 2L12 20.5 10.2 14l-6.7-2 6.7-2z"/>',
   play: '<path d="M7.5 5.5v13l11-6.5z"/>',
   chev: '<path d="m6 9 6 6 6-6"/>',
+  chevLeft: '<path d="m15 6-6 6 6 6"/>',
+  chevRight: '<path d="m9 6 6 6-6 6"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.1"/>',
   stop: '<rect x="6.5" y="6.5" width="11" height="11" rx="2.5"/>',
   mic: '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8.5 21h7"/>',
   micOff: '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 10.5a6.5 6.5 0 0 0 13 0M12 17v4M8.5 21h7M3 3l18 18"/>',
@@ -58,6 +61,8 @@ export function renderText(text) {
     return `<p>${inline(b).replace(/\n/g, "<br>")}</p>`;
   }).join("");
 }
+// Display-only text without the Markdown markers renderText turns into formatting.
+export const plainText = (text) => String(text ?? "").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]+)`/g, "$1");
 const inline = (s) => s.replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
 
 export function toast(msg) {

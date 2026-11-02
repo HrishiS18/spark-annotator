@@ -1,0 +1,125 @@
+{
+  "_comment": "How a voice session's speech is described back to the participant and researcher. These are defaults; a study in studies.json can override any key under a \"voice_measures\" object, and each session snapshots the merged settings. Timing (pauses before replies, pace, overlaps, filler and change-of-state words) comes from Codex's timestamped transcript and needs no audio. Acoustic measures (pitch, loudness, pauses inside a turn, syllable rate) are computed in the participant's browser; only the resulting numbers are sent and stored, never audio. Every value is compared with the same participant's own typical value in that session, never with other people or absolute norms. \"min_delta.filler_rate\" is filler words per 100 words. \"weights\" only order the \"Turns that stand out\" list; the size-based flags are ranked by how far they are from usual. \"display\" sets review-page sizes and the share of speech overlapping the agent above which pitch and loudness are marked less certain.",
+  "enabled": true,
+  "show_to_participant": "after_independent_review",
+  "timing": {
+    "backchannel_max_words": 3,
+    "overlap_min_s": 0.5,
+    "fillers": [
+      "um",
+      "uh",
+      "er",
+      "erm",
+      "hmm",
+      "hm"
+    ],
+    "change_tokens": [
+      "oh",
+      "ah",
+      "aha",
+      "i see",
+      "wait",
+      "huh",
+      "hold on",
+      "actually"
+    ],
+    "change_token_window_words": 4
+  },
+  "acoustic": {
+    "enabled": true,
+    "hop_ms": 20,
+    "window_ms": 40,
+    "target_rate_hz": 16000,
+    "pitch_min_hz": 60,
+    "pitch_max_hz": 500,
+    "yin_threshold": 0.15,
+    "pitch_min_confidence": 0.8,
+    "vad_margin_db": 12,
+    "vad_min_db": -65,
+    "noise_floor_window_s": 8,
+    "noise_floor_percentile": 10,
+    "min_speech_ms": 200,
+    "end_silence_ms": 700,
+    "pause_min_ms": 250,
+    "remote_active_db": -50,
+    "remote_hold_ms": 40,
+    "syllable_prominence_db": 2.5,
+    "syllable_min_gap_ms": 100,
+    "syllable_smooth_frames": 3,
+    "pitch_end_fraction": 0.3,
+    "pitch_slope_min_frames": 5,
+    "send_interval_ms": 3000,
+    "max_batch": 50,
+    "match_tolerance_ms": 1500,
+    "max_samples": 3000,
+    "max_utterance_ms": 180000
+  },
+  "notable": {
+    "min_turns": 4,
+    "z": 1.5,
+    "min_delta": {
+      "gap_s": 2.0,
+      "pitch_st": 2.0,
+      "loudness_db": 3.0,
+      "rate_pct": 20,
+      "pause_s": 1.0,
+      "filler_rate": 4.0
+    },
+    "rising_end_st": 2.0,
+    "weights": {
+      "overlap": 1.0,
+      "change_token": 1.0,
+      "rising_end": 0.5,
+      "fillers": 0.5
+    },
+    "max_listed": 6
+  },
+  "display": {
+    "preview_chars": 80,
+    "echo_warn_share": 0.2,
+    "chart": {
+      "column_px": 12,
+      "gap_px": 2,
+      "row_px": 34,
+      "tick_px": 8
+    }
+  },
+  "wording": {
+    "setup_notice": "The app also measures pauses, pitch and loudness on your device and saves only those numbers.",
+    "panel_title": "How you spoke",
+    "panel_hint": "Measured from timing and sound levels on your device. No audio was saved. These describe how you spoke, not what you were thinking, and every value is compared with your own usual way of speaking in this conversation.",
+    "timing_only": "Pitch and loudness were not measured in this session, so only timing is shown.",
+    "not_enough": "There are too few spoken turns to compare against your usual way of speaking.",
+    "usual_title": "Your usual",
+    "usual": {
+      "gap_s": "{value} s before replying",
+      "wpm": "{value} words/min",
+      "pitch_hz": "{value} Hz pitch"
+    },
+    "rows": {
+      "gap_s": "Pause before replying",
+      "pitch_st": "Pitch vs. usual",
+      "loudness_db": "Loudness vs. usual",
+      "rate_pct": "Pace vs. usual"
+    },
+    "chart_hint": "Each column is one of your turns, in order. Bars above the line are more than your usual, below are less; taller bars are further from usual. Orange ticks mark the turn during or right after each of your moments.",
+    "notable_title": "Turns that stand out",
+    "notable_empty": "None of your turns stood out from your usual way of speaking.",
+    "flags": {
+      "long_gap": "Paused {value} s before replying",
+      "overlap": "Started while the agent was still speaking",
+      "pitch_up": "Pitch {value} semitones higher than usual",
+      "pitch_down": "Pitch {value} semitones lower than usual",
+      "louder": "{value} dB louder than usual",
+      "quieter": "{value} dB quieter than usual",
+      "slower": "{value}% slower than usual",
+      "faster": "{value}% faster than usual",
+      "long_pause": "Paused {value} s mid-turn",
+      "rising_end": "Pitch rose at the end",
+      "change_token": "Said “{value}”",
+      "fillers": "{value} filler words"
+    },
+    "quality_echo": "The agent's voice may have reached your microphone, so pitch and loudness are less certain.",
+    "turn_label": "Turn"
+  }
+}

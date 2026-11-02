@@ -135,7 +135,8 @@ async def main(client_factory=ClaudeSDKClient):
                     options = ClaudeAgentOptions(
                         cwd=root, model=config["model"], effort=config["effort"],
                         system_prompt={"type":"preset","preset":"claude_code","append":config["persona"] +
-                          "\nWork on TASK.md in this workspace. Do not access study records, other sessions, credentials or .runtime."},
+                          "\n" + config.get("instructions", "Work on TASK.md in this workspace.") +
+                          " Do not access study records, other sessions, credentials or .runtime."},
                         tools={"type":"preset","preset":"claude_code"}, disallowed_tools=["Agent","Task","Skill"],
                         setting_sources=[], skills=[], plugins=[], mcp_servers={}, strict_mcp_config=True,
                         permission_mode=CLAUDE_PERMISSION_MODE, can_use_tool=permission, include_partial_messages=True,

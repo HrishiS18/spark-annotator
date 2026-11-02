@@ -1,8 +1,10 @@
+import io
 import json
 import tempfile
 import threading
 import unittest
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.error import HTTPError
@@ -52,12 +54,12 @@ class ServerTests(unittest.TestCase):
             p.stop()
         self.tmp.cleanup()
 
-    def request(self, path, body=None, method="GET", headers=None, raw=False):
+    def request(self, path, body=None, method="GET", headers=None, raw=False, timeout=5):
         payload = body if raw else json.dumps(body).encode() if body is not None else None
         request = Request(self.base + path, data=payload, method=method,
                           headers={"Content-Type": "application/octet-stream" if raw else "application/json", **(headers or {})})
         try:
-            with urlopen(request, timeout=5) as response:
+            with urlopen(request, timeout=timeout) as response:
                 return response.status, json.loads(response.read())
         except HTTPError as exc:
             with exc:
@@ -110,6 +112,18 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(exported["marks"][0]["event_id"], assistant["id"])
         self.assertEqual(exported["runtime"]["last_turn_status"], "interrupted")
 
+    def test_study_agent_instructions_replace_task_file_default(self):
+        s = self.create()
+        self.assertIn(s["prompt"]["text"], s["config_snapshot"]["agent_instructions"])
+        self.assertEqual(self.request(self.prefix + "/runtime/connect", {}, "POST")[0], 200)
+        start = next(m for m in self.runtime.get(self.sid).rpc.sent if m["method"] == "thread/start")
+        instructions = start["params"]["developerInstructions"]
+        self.assertIn(s["prompt"]["text"], instructions)
+        self.assertNotIn("TASK.md", instructions)
+        self.assertIn("Do not search for study records", instructions)
+        trading = self.create(study="trading")
+        self.assertIsNone(trading["config_snapshot"]["agent_instructions"])
+
     def test_voice_mode_routes_to_native_codex_session(self):
         self.assertEqual(self.request("/api/sessions", {"study": "dilemma", "runtime": "claude",
             "interaction_mode": "voice"}, "POST")[0], 400)
@@ -123,6 +137,48 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request(self.prefix + "/message", {"text": "Hi", "client_message_id": "message-voice"}, "POST")[0], 503)
         self.assertEqual(self.request(self.prefix + "/runtime/voice/stop", {}, "POST")[0], 200)
         self.assertEqual(self.request(self.prefix + "/advance", {"phase": "chat"}, "POST")[0], 200)
+
+    def test_voice_measures_store_profile_gate_and_export(self):
+        from tests.test_voice_measures import CONVERSATION, feed_for, sample
+        created = self.create(interaction_mode="voice")
+        self.assertTrue(created["config_snapshot"]["voice_measures"]["acoustic"]["enabled"])
+        _, cfg = self.request("/api/config")
+        self.assertTrue(cfg["voice_measures"]["dilemma"]["acoustic"])
+        with server.LOCK:
+            s = self.store.load(self.sid)
+            for sid, role, _, _, text in CONVERSATION:
+                server.add_event(s, role, text)["meta"].update(voice=True, realtime_item_id=sid)
+            self.store.save(s)
+        for row in feed_for(CONVERSATION):
+            self.store.publish(self.sid, row["notification"])
+        batch = [sample(f"{i:x}", start, end, 150 if i != 3 else 190, -30, 30)
+                 for i, (start, end) in enumerate([(12.2, 19.8), (33.1, 40.9), (54.2, 61.8), (85.1, 92.8), (106.2, 112.9)])]
+        self.assertEqual(self.request(self.prefix + "/voice-samples", {"samples": batch}, "POST")[1]["added"], [v["id"] for v in batch])
+        self.assertEqual(self.request(self.prefix + "/voice-samples", {"samples": batch[:1]}, "POST")[1]["added"], [])
+        self.assertEqual(self.request(self.prefix + "/voice-samples", {"samples": [{**batch[0], "id": "bad"}]}, "POST")[0], 400)
+        self.assertEqual(len(self.store.load(self.sid)["voice_samples"]), 5)
+        _, view = self.request(self.prefix)
+        self.assertNotIn("voice_samples", view)
+        self.assertEqual(view["voice_sample_count"], 5)
+        self.assertEqual(view["voice_settings"]["show_to_participant"], "after_independent_review")
+        # Hidden from the participant until their independent pass is locked; researchers always see it.
+        self.assertEqual(self.request(self.prefix + "/voice-profile")[1], {"visible": False})
+        _, profile = self.request(self.prefix + "/voice-profile?view=researcher")
+        self.assertTrue(profile["visible"] and profile["available"]["acoustic"])
+        self.assertIn("pitch_up", [f["key"] for f in profile["turns"][3]["flags"]])
+        self.request(self.prefix + "/advance", {"phase": "chat"}, "POST")
+        self.request(self.prefix + "/advance", {"phase": "post", "text": "Final"}, "POST")
+        self.assertEqual(self.request(self.prefix + "/review/complete-independent", {}, "POST")[0], 200)
+        shown = self.request(self.prefix + "/voice-profile")[1]
+        self.assertTrue(shown["visible"] and shown["shown_at"])
+        stored = self.store.load(self.sid)["voice_profile_shown"]
+        self.assertEqual(stored["profile"]["turns"], shown["turns"])
+        self.assertEqual(stored["settings"], view["voice_settings"])
+        self.assertEqual(self.request(self.prefix + "/voice-samples", {"samples": batch[:1]}, "POST")[0], 400)
+        with urlopen(self.base + "/api/export/voice.csv", timeout=5) as response:
+            rows = response.read().decode().splitlines()
+        self.assertEqual(len(rows), 6)
+        self.assertIn("pitch_up", rows[4])
 
     def test_blinded_double_coded_judge_validation_api(self):
         self.create()
@@ -226,6 +282,50 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(saved["t"],100)
         self.assertEqual(saved["quick_type"],"additive")
 
+    def test_identical_message_mark_is_reused_and_can_be_unmarked(self):
+        self.create(runtime="demo")
+        with server.LOCK:
+            s = self.store.load(self.sid)
+            ev = server.add_event(s, "assistant", "One useful passage")
+            self.store.save(s)
+        body = {"source": "overlay", "anchor": "message", "event_id": ev["id"]}
+        code, mark = self.request(self.prefix + "/marks", {**body, "id": "m_12345678"}, "POST")
+        self.assertEqual(code, 201)
+        code, repeated = self.request(self.prefix + "/marks", {**body, "id": "m_87654321"}, "POST")
+        self.assertEqual((code, repeated["id"]), (200, mark["id"]))
+        self.assertEqual(len(self.store.load(self.sid)["marks"]), 1)
+        code, removed = self.request(self.prefix + "/marks/" + mark["id"], {"deleted": True}, "PATCH")
+        self.assertEqual(code, 200)
+        self.assertTrue(removed["deleted"])
+        code, restored = self.request(self.prefix + "/marks", {**body, "id": mark["id"], "client_version": 2, "deleted": False}, "POST")
+        self.assertEqual(code, 200)
+        self.assertFalse(restored["deleted"])
+        self.assertEqual(len(self.store.load(self.sid)["marks"]), 1)
+
+    def test_exchange_mark_persists_as_one_ordered_episode(self):
+        self.create(runtime="demo")
+        with server.LOCK:
+            s = self.store.load(self.sid)
+            first = server.add_event(s, "user", "Initial view")
+            middle = server.add_event(s, "assistant", "Alternative framing")
+            last = server.add_event(s, "user", "Revised view")
+            self.store.save(s)
+        episode = {"start_event_id": first["id"], "end_event_id": last["id"]}
+        body = {"source": "overlay", "anchor": "exchange", "event_id": first["id"], "episode": episode,
+                "exposure": {"events": [{"event_id": e["id"], "rendered_text": e["text"]} for e in (first, middle, last)]}}
+        code, mark = self.request(self.prefix + "/marks", {**body, "id": "m_12345678"}, "POST")
+        self.assertEqual(code, 201)
+        self.assertEqual(mark["episode"], episode)
+        self.assertEqual(len(mark["exposure"]["events"]), 3)
+        code, repeated = self.request(self.prefix + "/marks", {**body, "id": "m_87654321"}, "POST")
+        self.assertEqual((code, repeated["id"]), (200, mark["id"]))
+        self.assertEqual(self.request(self.prefix + "/marks", {**body, "episode": {
+            "start_event_id": first["id"], "end_event_id": first["id"]}}, "POST")[0], 400)
+        code, exported = self.request(self.prefix + "/export.json")
+        self.assertEqual(code, 200)
+        self.assertEqual(exported["marks"][0]["episode"], episode)
+        self.assertEqual(len(exported["marks"]), 1)
+
     def test_independent_pass_gates_suggestions_and_cannot_be_bypassed(self):
         self.create(runtime="demo")
         with server.LOCK:
@@ -250,6 +350,101 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request(self.prefix+"/marks/"+m["id"],{"review":{"decision":"rejected"}},"PATCH")[0],409)
         self.assertEqual(self.request(self.prefix+"/advance",{"phase":"review"},"POST")[0],200)
         self.assertEqual(self.request(self.prefix+"/candidates/c_test",{"participant_response":{"answer":"yes"}},"PATCH")[0],400)
+
+    def test_completed_session_zip_contains_artifacts_and_excludes_runtime_state(self):
+        self.create(runtime="demo")
+        archive_url = self.base + self.prefix + "/export.zip"
+        with self.assertRaises(HTTPError) as blocked:
+            urlopen(archive_url, timeout=5)
+        self.assertEqual(blocked.exception.code, 409)
+        blocked.exception.close()
+        original_log = json.dumps({"messages": [{"role": "user", "content": "A prior interaction",
+                                                  "timestamp": "2026-10-13T00:00:01Z"}]}).encode()
+        upload_code, upload = self.request("/api/upload", original_log, "POST", {"X-Filename": "prior-chat.json"}, raw=True)
+        self.assertEqual(upload_code, 200)
+        self.assertEqual(self.request(self.prefix + "/import", {"upload_id": upload["upload_id"]}, "POST")[0], 200)
+        root = self.store.path.parent
+        workspace = root / "workspaces" / self.sid
+        workspace.mkdir(parents=True)
+        (workspace / "notes.txt").write_text("Participant work", encoding="utf-8")
+        (workspace / ".runtime").mkdir()
+        (workspace / ".runtime" / "native-state.json").write_text("do not export", encoding="utf-8")
+        (root / "recordings" / f"{self.sid}.webm").write_bytes(b"recorded-video")
+        with server.LOCK:
+            s = self.store.load(self.sid)
+            ev = server.add_event(s, "assistant", "Consider a third option")
+            s["recording"] = {"file": f"{self.sid}.webm", "status": "ready"}
+            self.store.save(s)
+        self.assertEqual(self.request(self.prefix + "/advance", {"phase": "chat"}, "POST")[0], 200)
+        self.assertEqual(self.request(self.prefix + "/advance", {"phase": "post", "text": "Revised position"}, "POST")[0], 200)
+        code, mark = self.request(self.prefix + "/marks", {"event_id": ev["id"], "anchor": "message"}, "POST")
+        self.assertEqual(code, 201)
+        self.assertEqual(self.request(self.prefix + "/marks/" + mark["id"],
+                                      {"review": {"decision": "confirmed", "after": "I considered another option"}}, "PATCH")[0], 200)
+        self.assertEqual(self.request(self.prefix + "/review/complete-independent", {}, "POST")[0], 200)
+        self.assertEqual(self.request(self.prefix + "/advance", {"phase": "review"}, "POST")[0], 200)
+        with urlopen(archive_url, timeout=5) as response:
+            self.assertEqual(response.headers.get_content_type(), "application/zip")
+            self.assertIn(f"spark-session-{self.sid}.zip", response.headers["Content-Disposition"])
+            payload = response.read()
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            names = set(archive.namelist())
+            self.assertTrue({"manifest.json", "session.json", "transcript.md", "conversation/events.jsonl",
+                             "participant/before.txt", "participant/after.txt", "participant/moments.json",
+                             "analysis/judge-runs.json", "runtime/trace.jsonl", "workspace/notes.txt",
+                             f"recording/{self.sid}.webm", f"imports/{upload['upload_id']}/prior-chat.json"}.issubset(names))
+            self.assertNotIn("workspace/.runtime/native-state.json", names)
+            self.assertEqual(archive.read("participant/before.txt"), b"Private baseline")
+            self.assertEqual(archive.read("participant/after.txt"), b"Revised position")
+            self.assertEqual(archive.read(f"recording/{self.sid}.webm"), b"recorded-video")
+            self.assertEqual(archive.read("workspace/notes.txt"), b"Participant work")
+            self.assertEqual(archive.read(f"imports/{upload['upload_id']}/prior-chat.json"), original_log)
+            exported = json.loads(archive.read("session.json"))
+            self.assertEqual(exported["phase"], "done")
+            self.assertEqual(exported["marks"][0]["review"]["after"], "I considered another option")
+            self.assertIn("record_history", exported)
+            self.assertIn("runtime_trace", exported)
+            manifest = json.loads(archive.read("manifest.json"))
+            self.assertEqual(manifest["session_id"], self.sid)
+            self.assertFalse(manifest["omitted"])
+
+    def test_highlights_api_persist_lock_and_export(self):
+        created = self.create(runtime="demo")
+        self.assertFalse(created["config_snapshot"]["annotation"]["highlights"]["enabled"])
+        with server.LOCK:
+            s = self.store.load(self.sid)
+            # Legacy sessions can still edit and export existing highlights.
+            s["config_snapshot"]["annotation"]["highlights"]["enabled"] = True
+            ev = server.add_event(s, "assistant", "Consider the stakeholder you skipped.")
+            self.store.save(s)
+        self.request(self.prefix+"/advance", {"phase":"chat"}, "POST")
+        self.request(self.prefix+"/advance", {"phase":"post","text":"Final position with stakeholder"}, "POST")
+        _, view = self.request(self.prefix)
+        self.assertEqual(view["annotation_settings"]["highlights"]["max_chars"], server.annotations.ANNOTATION["highlights"]["max_chars"])
+        steps = view["annotation_settings"]["review_steps"]
+        self.assertTrue(steps["enabled"])
+        self.assertEqual(set(steps["wording"]["steps"]), {"moments", "highlights", "suggestions", "voice"})
+        body = {"id":"h_0123456789abcdef","target":{"kind":"event","event_id":ev["id"]},"start":13,"end":24,"text":"stakeholder",
+                "note":"Hadn't thought of them","tags":["new angle"]}
+        code, h = self.request(self.prefix+"/highlights", body, "POST")
+        self.assertEqual(code, 201)
+        self.assertEqual(self.request(self.prefix+"/highlights", body, "POST"), (200, h))
+        self.assertEqual(self.request(self.prefix+"/highlights", {**body, "id":"h_aaaaaaaa", "text":"wrong"}, "POST")[0], 400)
+        code, w = self.request(self.prefix+"/highlights", {"target":{"kind":"writing","writing":"post"},"start":20,"end":31,"text":"stakeholder"}, "POST")
+        self.assertEqual(code, 201)
+        self.assertEqual(self.request(self.prefix+"/highlights/"+h["id"], {"expected_version":1,"tags":["new angle","pushback"]}, "PATCH")[1]["version"], 2)
+        self.assertEqual(self.request(self.prefix+"/highlights/"+h["id"], {"expected_version":1,"note":"stale"}, "PATCH")[0], 409)
+        self.assertEqual(self.request(self.prefix+"/tag-suggestions")[1], ["new angle", "pushback"])
+        stored = self.store.load(self.sid)["highlights"]
+        self.assertEqual([x["id"] for x in stored], [h["id"], w["id"]])
+        self.assertEqual(len(self.store.versions(self.sid, "highlight", h["id"])), 2)
+        self.assertEqual(self.request(self.prefix+"/review/complete-independent", {}, "POST")[0], 200)
+        self.assertEqual(self.request(self.prefix+"/highlights/"+h["id"], {"expected_version":2,"note":"late"}, "PATCH")[0], 409)
+        with urlopen(self.base+"/api/export/highlights.csv", timeout=5) as response:
+            rows = response.read().decode()
+        self.assertIn("Hadn't thought of them", rows)
+        self.assertIn("new angle|pushback", rows)
+        self.assertEqual(rows.count(self.sid), 2)
 
     def test_manual_judge_override_for_demo_and_no_regex_endpoints(self):
         self.create(runtime="demo")
@@ -381,7 +576,8 @@ class ServerTests(unittest.TestCase):
 
     def test_claude_native_question_tools_and_private_workspace_routes(self):
         self.create(runtime="claude")
-        self.assertEqual(self.request(self.prefix+"/runtime/connect",{},"POST")[0],200)
+        # A cold SDK import can exceed the default HTTP test timeout on macOS.
+        self.assertEqual(self.request(self.prefix+"/runtime/connect",{},"POST",timeout=20)[0],200)
         self.assertEqual(self.request(self.prefix+"/workspace/files",b"Test","POST",{"X-Filename":"input.txt"},raw=True)[0],201)
         self.assertEqual(self.request(self.prefix+"/message",{"text":"[ASK] Make a file","client_message_id":"claude-api-test-0001"},"POST")[0],202)
         for _ in range(100):
