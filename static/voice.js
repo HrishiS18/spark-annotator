@@ -1,10 +1,13 @@
 import { api } from "/static/common.js";
+import { VoiceMeter } from "/static/voice_meter.js";
 
 // The browser is only the microphone/speaker and WebRTC client. Codex app-server
 // owns the native voice session, its model, and the Codex-agent handoffs.
 export class NativeVoiceClient {
-  constructor(sessionId, audioElement, onState = () => {}) {
+  constructor(sessionId, audioElement, onState = () => {}, measures = null) {
     this.sessionId = sessionId;
+    this.measures = measures;
+    this.meter = null;
     this.audioElement = audioElement;
     this.onState = onState;
     this.pc = null;
@@ -25,11 +28,18 @@ export class NativeVoiceClient {
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
       this.ensureOpen();
+      if (this.measures?.enabled && this.measures.acoustic.enabled) {
+        // Measurement is optional: voice chat continues if this browser cannot measure.
+        const meter = new VoiceMeter(this.sessionId, this.measures);
+        try { await meter.start(this.stream); this.meter = meter; }
+        catch (error) { console.warn("Voice measurement unavailable:", error); await meter.stop().catch(() => {}); }
+      }
       this.pc = new RTCPeerConnection();
       this.stream.getAudioTracks().forEach(track => this.pc.addTrack(track, this.stream));
       this.pc.createDataChannel("oai-events");
       this.pc.ontrack = event => {
         this.audioElement.srcObject = event.streams[0] || new MediaStream([event.track]);
+        this.meter?.attachRemote(this.audioElement.srcObject);
         this.audioElement.play().catch(() => this.onState("playback-blocked"));
       };
       this.pc.onconnectionstatechange = () => {
@@ -75,6 +85,8 @@ export class NativeVoiceClient {
   }
 
   closeLocal() {
+    void this.meter?.stop();
+    this.meter = null;
     this.stream?.getTracks().forEach(track => track.stop());
     this.stream = null;
     this.pc?.close();
@@ -85,6 +97,9 @@ export class NativeVoiceClient {
 
   async stop() {
     this.cancelled = true;
+    // Send the last utterance before the conversation can be closed.
+    await this.meter?.stop().catch(() => {});
+    this.meter = null;
     this.closeLocal();
     this.onState("stopping");
     await api("POST", `/api/sessions/${this.sessionId}/runtime/voice/stop`, {});

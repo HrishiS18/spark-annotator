@@ -54,12 +54,12 @@ class ServerTests(unittest.TestCase):
             p.stop()
         self.tmp.cleanup()
 
-    def request(self, path, body=None, method="GET", headers=None, raw=False):
+    def request(self, path, body=None, method="GET", headers=None, raw=False, timeout=5):
         payload = body if raw else json.dumps(body).encode() if body is not None else None
         request = Request(self.base + path, data=payload, method=method,
                           headers={"Content-Type": "application/octet-stream" if raw else "application/json", **(headers or {})})
         try:
-            with urlopen(request, timeout=5) as response:
+            with urlopen(request, timeout=timeout) as response:
                 return response.status, json.loads(response.read())
         except HTTPError as exc:
             with exc:
@@ -137,6 +137,48 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request(self.prefix + "/message", {"text": "Hi", "client_message_id": "message-voice"}, "POST")[0], 503)
         self.assertEqual(self.request(self.prefix + "/runtime/voice/stop", {}, "POST")[0], 200)
         self.assertEqual(self.request(self.prefix + "/advance", {"phase": "chat"}, "POST")[0], 200)
+
+    def test_voice_measures_store_profile_gate_and_export(self):
+        from tests.test_voice_measures import CONVERSATION, feed_for, sample
+        created = self.create(interaction_mode="voice")
+        self.assertTrue(created["config_snapshot"]["voice_measures"]["acoustic"]["enabled"])
+        _, cfg = self.request("/api/config")
+        self.assertTrue(cfg["voice_measures"]["dilemma"]["acoustic"])
+        with server.LOCK:
+            s = self.store.load(self.sid)
+            for sid, role, _, _, text in CONVERSATION:
+                server.add_event(s, role, text)["meta"].update(voice=True, realtime_item_id=sid)
+            self.store.save(s)
+        for row in feed_for(CONVERSATION):
+            self.store.publish(self.sid, row["notification"])
+        batch = [sample(f"{i:x}", start, end, 150 if i != 3 else 190, -30, 30)
+                 for i, (start, end) in enumerate([(12.2, 19.8), (33.1, 40.9), (54.2, 61.8), (85.1, 92.8), (106.2, 112.9)])]
+        self.assertEqual(self.request(self.prefix + "/voice-samples", {"samples": batch}, "POST")[1]["added"], [v["id"] for v in batch])
+        self.assertEqual(self.request(self.prefix + "/voice-samples", {"samples": batch[:1]}, "POST")[1]["added"], [])
+        self.assertEqual(self.request(self.prefix + "/voice-samples", {"samples": [{**batch[0], "id": "bad"}]}, "POST")[0], 400)
+        self.assertEqual(len(self.store.load(self.sid)["voice_samples"]), 5)
+        _, view = self.request(self.prefix)
+        self.assertNotIn("voice_samples", view)
+        self.assertEqual(view["voice_sample_count"], 5)
+        self.assertEqual(view["voice_settings"]["show_to_participant"], "after_independent_review")
+        # Hidden from the participant until their independent pass is locked; researchers always see it.
+        self.assertEqual(self.request(self.prefix + "/voice-profile")[1], {"visible": False})
+        _, profile = self.request(self.prefix + "/voice-profile?view=researcher")
+        self.assertTrue(profile["visible"] and profile["available"]["acoustic"])
+        self.assertIn("pitch_up", [f["key"] for f in profile["turns"][3]["flags"]])
+        self.request(self.prefix + "/advance", {"phase": "chat"}, "POST")
+        self.request(self.prefix + "/advance", {"phase": "post", "text": "Final"}, "POST")
+        self.assertEqual(self.request(self.prefix + "/review/complete-independent", {}, "POST")[0], 200)
+        shown = self.request(self.prefix + "/voice-profile")[1]
+        self.assertTrue(shown["visible"] and shown["shown_at"])
+        stored = self.store.load(self.sid)["voice_profile_shown"]
+        self.assertEqual(stored["profile"]["turns"], shown["turns"])
+        self.assertEqual(stored["settings"], view["voice_settings"])
+        self.assertEqual(self.request(self.prefix + "/voice-samples", {"samples": batch[:1]}, "POST")[0], 400)
+        with urlopen(self.base + "/api/export/voice.csv", timeout=5) as response:
+            rows = response.read().decode().splitlines()
+        self.assertEqual(len(rows), 6)
+        self.assertIn("pitch_up", rows[4])
 
     def test_blinded_double_coded_judge_validation_api(self):
         self.create()
@@ -379,6 +421,9 @@ class ServerTests(unittest.TestCase):
         self.request(self.prefix+"/advance", {"phase":"post","text":"Final position with stakeholder"}, "POST")
         _, view = self.request(self.prefix)
         self.assertEqual(view["annotation_settings"]["highlights"]["max_chars"], server.annotations.ANNOTATION["highlights"]["max_chars"])
+        steps = view["annotation_settings"]["review_steps"]
+        self.assertTrue(steps["enabled"])
+        self.assertEqual(set(steps["wording"]["steps"]), {"moments", "highlights", "suggestions", "voice"})
         body = {"id":"h_0123456789abcdef","target":{"kind":"event","event_id":ev["id"]},"start":13,"end":24,"text":"stakeholder",
                 "note":"Hadn't thought of them","tags":["new angle"]}
         code, h = self.request(self.prefix+"/highlights", body, "POST")
@@ -531,7 +576,8 @@ class ServerTests(unittest.TestCase):
 
     def test_claude_native_question_tools_and_private_workspace_routes(self):
         self.create(runtime="claude")
-        self.assertEqual(self.request(self.prefix+"/runtime/connect",{},"POST")[0],200)
+        # A cold SDK import can exceed the default HTTP test timeout on macOS.
+        self.assertEqual(self.request(self.prefix+"/runtime/connect",{},"POST",timeout=20)[0],200)
         self.assertEqual(self.request(self.prefix+"/workspace/files",b"Test","POST",{"X-Filename":"input.txt"},raw=True)[0],201)
         self.assertEqual(self.request(self.prefix+"/message",{"text":"[ASK] Make a file","client_message_id":"claude-api-test-0001"},"POST")[0],202)
         for _ in range(100):

@@ -42,6 +42,7 @@ async function setup() {
   form.study.innerHTML = studies.map(study => `<option value="${esc(study.key)}">${esc(study.label)}</option>`).join("");
   form.persona.innerHTML = cfg.personas.filter(persona => persona.key !== "trading").map(persona => `<option value="${esc(persona.key)}">${esc(persona.label)}</option>`).join("");
 
+  const voiceNote = $("#voice-note").textContent;
   function syncRuntime() {
     const human = form.condition.value === "human";
     const claude = !human && form.runtime.value === "claude";
@@ -50,6 +51,8 @@ async function setup() {
     form.interaction_mode.disabled = !codex;
     if (!codex) form.interaction_mode.value = "text";
     $("#voice-note").classList.toggle("hidden", form.interaction_mode.value !== "voice");
+    const measures = cfg.voice_measures?.[form.study.value];
+    $("#voice-note").textContent = voiceNote + (measures?.acoustic ? ` ${measures.setup_notice}` : "");
     document.body.dataset.agent = human ? "human" : form.runtime.value;
     claudeSetup.classList.toggle("hidden", !claude);
     if (claude) $("#claude-setup-model").textContent = modelLabel(cfg.runtimes?.claude?.model);
@@ -91,7 +94,7 @@ async function setup() {
     syncRuntime();
   }
 
-  form.study.onchange = syncStudy;
+  form.study.onchange = () => { syncStudy(); syncRuntime(); };
   form.condition.onchange = syncPartner;
   form.runtime.onchange = syncRuntime;
   form.interaction_mode.addEventListener("change", syncRuntime);

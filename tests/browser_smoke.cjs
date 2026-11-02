@@ -20,7 +20,8 @@ const assert = require('node:assert/strict');
   let browser;
   try {
     let ready = false;
-    for (let i = 0; i < 100; i++) {
+    // Cold SDK imports can take longer than ten seconds on a fresh machine.
+    for (let i = 0; i < 300; i++) {
       try { const response = await fetch(base + '/api/config'); if (response.ok) { ready = true; break; } } catch {}
       await new Promise(resolve => setTimeout(resolve, 100));
     }
@@ -300,10 +301,13 @@ const assert = require('node:assert/strict');
     await page.reload();
     assert.equal((await (await fetch(`${base}/api/sessions/${sid}?view=researcher`)).json()).analysis_runs.length,1);
     await page.screenshot({ path:path.join(data,'spark-review.png'),fullPage:true });
+    // Guided review locks at the end of moments; the retired Highlights step is absent.
+    assert.equal(await page.locator('#rv').getAttribute('data-step'), 'moments');
     await page.locator('#finish').click();
     console.log('QA: independent pass submitted');
     await page.waitForFunction(() => document.querySelector('#finish')?.textContent === 'Finish and return home');
-    assert((await page.locator('#review-next').textContent()).includes('Suggested moments below are optional'));
+    assert.equal(await page.locator('#rv').getAttribute('data-step'), 'suggestions');
+    assert((await page.locator('#todo').textContent()).includes('suggested moments'));
     assert.equal(await page.locator('.flag-card.open').count(), 0);
     assert.equal(await page.locator('.flag-card.read-only').count(), 2);
     await page.screenshot({path:path.join(data,'review-after-independent.png'),fullPage:true});
@@ -484,7 +488,7 @@ const assert = require('node:assert/strict');
     await request('/api/sessions/'+liveSelectionSession.id+'/advance',{phase:'chat'});
     await request('/api/sessions/'+liveSelectionSession.id+'/advance',{phase:'post',text:'Synthetic final answer'});
     await selectionPage.goto(base+'/review?id='+liveSelectionSession.id);
-    await selectionPage.locator(`.flag-card[data-flag="${exchangeMark.id}"]`).waitFor();
+    await selectionPage.locator(`.flag-card[data-flag="${exchangeMark.id}"]`).waitFor({state:'attached'});
     assert((await selectionPage.locator(`.flag-card[data-flag="${exchangeMark.id}"]`).textContent()).includes('Exchange marked during interaction'));
     assert.equal(await selectionPage.locator(`.flag-card[data-flag="${exchangeMark.id}"] [data-start]`).inputValue(),exchangeIds[0]);
     assert.equal(await selectionPage.locator(`.flag-card[data-flag="${exchangeMark.id}"] [data-end]`).inputValue(),exchangeIds[1]);

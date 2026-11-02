@@ -2,9 +2,26 @@
 
 Local research prototype for **sparks**: participant-perceived valuable ideas or insights. Perceived value, adoption, persuasion, copying, and eventual usefulness are separate measurements.
 
+**Want to try it?** Start with the [three-step local setup](#quick-start-try-it-locally-with-codex). Codex runs on your Mac; you do not need an API key for a Codex-only test.
+
 ## Recent additions
 
 **Passage marking:** Participants can select exact text during the conversation or review and mark it as a moment. The separate, open-ended **Your highlights** workflow has been removed from participant review. New sessions disable highlight creation; older records remain in the research exports. Live **Mark this** selections still store exact offsets when the text matches the stored message uniquely.
+
+**Voice measures:** Voice sessions can show a participant their reply timing and browser-measured speech characteristics after their independent review is locked. The browser sends per-utterance measurements, not microphone audio. The transcript, settings, and per-turn measures are retained for researcher analysis; see `config/voice_measures.json`.
+
+**Guided review:** Participant review moves through **Your moments → Suggestions → How you spoke** (voice sessions only). The retired standalone Highlights step is omitted. Participants lock their own moment reflections before seeing suggestions or voice measures.
+
+**How you spoke (voice sessions)** — a review panel describing pauses, pace, pitch and loudness, each compared with the participant's own usual turn:
+
+- **Timing** comes from Codex's timestamped realtime transcript, so it exists for every voice session, including ones recorded before this feature: gap before each reply, pace, filler words, turn-initial change-of-state words ("oh", "I see", "wait"), and starting while the agent was speaking. Short agent acknowledgements ("Mm-hmm") no longer split a participant turn.
+- **Acoustics** are measured in the participant's browser by an AudioWorklet (`static/voice_meter_worklet.js`, YIN pitch tracking and levels; `static/voice_meter.js`, speech detection, utterances, pauses, syllable-rate estimate). Only per-utterance numbers are sent (`POST /api/sessions/<id>/voice-samples`); no audio is stored. Frames heard while the agent's audio is playing are excluded from pitch and loudness, and sound heard only then is treated as echo.
+- The review shows a usual-values line, a small chart (one column per turn, ticks at the participant's moments), a **Turns that stand out** list that jumps to the transcript, and chips on those turns. A turn stands out only with enough turns and when it differs from the participant's own median by a robust z-score and a minimum size.
+- Participants see it after their independent pass is locked (so it cannot steer their own recall); researchers always see it. At that lock the profile and settings are saved as `voice_profile_shown`, so the record shows exactly what the participant saw even if settings change later. `voice.csv` exports one row per participant turn (recomputed with the session's snapshotted settings). The judge does not see these measures.
+- Reply gaps come from one source per session: the agent's audio as the browser heard it when every reply has that measurement, otherwise the transcript (both are exported). Filler words are compared as a rate per 100 words; "mm-hmm" is an acknowledgement, not two fillers; syllable rate uses only the time the agent was silent.
+- Thresholds, wording, and visibility live in `config/voice_measures.json`; studies can override them under `voice_measures`, and each session snapshots them. The setup page tells voice participants about the measurement.
+
+The guided review shows moments one at a time, with both written answers folded under **Your answers before and after**. The participant locks their moment answers at the end of that step. Wording lives under `review_steps` in `config/annotation.json`; set `review_steps.enabled` to `false` for the single-page review. The researcher view always uses the single-page layout.
 
 **Study option:** `agent_instructions` in `studies.json` gives the agent the question directly instead of pointing it at `TASK.md`. The dilemma study uses it, so the agent replies without opening files.
 
@@ -173,7 +190,7 @@ Imported timestamp alignment supplies contextual suggestions, not confirmed caus
 - SQLite transactions and revision checks; full historical analysis runs and archived responses.
 - Re-import preserves event identities, prior evidence, and annotations.
 - Workspaces: `data/workspaces/<session-id>/`; uploaded logs: `data/uploads/`; video: `data/recordings/`.
-- Full session JSON includes research history/runtime traces; CSV exports contain current participant annotations, legacy highlights when present (`highlights.csv`), and LLM candidates. CSV text fields are abbreviated; use JSON/full transcript for full evidence.
+- Full session JSON includes research history/runtime traces and per-utterance voice measurements, but not microphone audio. CSV exports contain current participant annotations, legacy highlights when present (`highlights.csv`), per-turn voice measures (`voice.csv`), and LLM candidates. CSV text fields are abbreviated; use JSON/full transcript for full evidence.
 - Finishing a session automatically downloads `spark-session-<id>.zip` (with a manual link on the completion screen). It contains full session JSON and version history, a readable transcript, event and runtime-trace JSONL, before/after answers, participant moments and reviews, legacy highlights, judge runs, any available recording and imported raw logs, and task workspace files. `manifest.json` records any missing legacy raw imports. Native agent `.runtime` state is excluded. The ZIP may contain sensitive conversation or workspace content; review it before sharing. The download is generated from the server's current data; a browser download is not a substitute for the server-side database/recording backup.
 - Browser localStorage temporarily contains unsynced bookmarks and review drafts. Consider shared-device cleanup and retention in the study protocol.
 
@@ -224,6 +241,7 @@ agent_runtime.py      shared provider dispatch (Codex / Claude only)
 claude_runtime.py     Claude event/approval adapter, native-session recovery
 claude_sdk_worker.py  isolated official SDK client with native tools/prompt
 annotations.py        participant reviews, evidence passages, highlights, locking
+voice_measures.py     voice timing from the realtime transcript, acoustic samples, per-turn profile
 judge.py              blinded LLM coding, quote/ID validation
 judge_backend.py      restricted Codex judge / optional API adapter
 judge_validation.py   blinded sampling, coder agreement, validation export
@@ -232,7 +250,8 @@ transcript.py         full timestamped transcript rendering
 static/bookmarks.js   durable retry outbox and click snapshots
 static/review_forms.js autosave, conflict checks, optional review fields
 static/highlights.js  span-painting helpers and legacy highlight implementation
+static/voice_meter*.js in-browser pitch/level measurement and utterance summaries (no audio sent)
 static/               participant/researcher/recorder/review interfaces
-config/               taxonomy, study templates, personas, annotation settings
+config/               taxonomy, study templates, personas, annotation and voice-measure settings
 tests/                synthetic unit/API/browser/live verification
 ```
