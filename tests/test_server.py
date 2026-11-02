@@ -1,8 +1,10 @@
+import io
 import json
 import tempfile
 import threading
 import unittest
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.error import HTTPError
@@ -238,6 +240,50 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(saved["t"],100)
         self.assertEqual(saved["quick_type"],"additive")
 
+    def test_identical_message_mark_is_reused_and_can_be_unmarked(self):
+        self.create(runtime="demo")
+        with server.LOCK:
+            s = self.store.load(self.sid)
+            ev = server.add_event(s, "assistant", "One useful passage")
+            self.store.save(s)
+        body = {"source": "overlay", "anchor": "message", "event_id": ev["id"]}
+        code, mark = self.request(self.prefix + "/marks", {**body, "id": "m_12345678"}, "POST")
+        self.assertEqual(code, 201)
+        code, repeated = self.request(self.prefix + "/marks", {**body, "id": "m_87654321"}, "POST")
+        self.assertEqual((code, repeated["id"]), (200, mark["id"]))
+        self.assertEqual(len(self.store.load(self.sid)["marks"]), 1)
+        code, removed = self.request(self.prefix + "/marks/" + mark["id"], {"deleted": True}, "PATCH")
+        self.assertEqual(code, 200)
+        self.assertTrue(removed["deleted"])
+        code, restored = self.request(self.prefix + "/marks", {**body, "id": mark["id"], "client_version": 2, "deleted": False}, "POST")
+        self.assertEqual(code, 200)
+        self.assertFalse(restored["deleted"])
+        self.assertEqual(len(self.store.load(self.sid)["marks"]), 1)
+
+    def test_exchange_mark_persists_as_one_ordered_episode(self):
+        self.create(runtime="demo")
+        with server.LOCK:
+            s = self.store.load(self.sid)
+            first = server.add_event(s, "user", "Initial view")
+            middle = server.add_event(s, "assistant", "Alternative framing")
+            last = server.add_event(s, "user", "Revised view")
+            self.store.save(s)
+        episode = {"start_event_id": first["id"], "end_event_id": last["id"]}
+        body = {"source": "overlay", "anchor": "exchange", "event_id": first["id"], "episode": episode,
+                "exposure": {"events": [{"event_id": e["id"], "rendered_text": e["text"]} for e in (first, middle, last)]}}
+        code, mark = self.request(self.prefix + "/marks", {**body, "id": "m_12345678"}, "POST")
+        self.assertEqual(code, 201)
+        self.assertEqual(mark["episode"], episode)
+        self.assertEqual(len(mark["exposure"]["events"]), 3)
+        code, repeated = self.request(self.prefix + "/marks", {**body, "id": "m_87654321"}, "POST")
+        self.assertEqual((code, repeated["id"]), (200, mark["id"]))
+        self.assertEqual(self.request(self.prefix + "/marks", {**body, "episode": {
+            "start_event_id": first["id"], "end_event_id": first["id"]}}, "POST")[0], 400)
+        code, exported = self.request(self.prefix + "/export.json")
+        self.assertEqual(code, 200)
+        self.assertEqual(exported["marks"][0]["episode"], episode)
+        self.assertEqual(len(exported["marks"]), 1)
+
     def test_independent_pass_gates_suggestions_and_cannot_be_bypassed(self):
         self.create(runtime="demo")
         with server.LOCK:
@@ -263,10 +309,70 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request(self.prefix+"/advance",{"phase":"review"},"POST")[0],200)
         self.assertEqual(self.request(self.prefix+"/candidates/c_test",{"participant_response":{"answer":"yes"}},"PATCH")[0],400)
 
-    def test_highlights_api_persist_lock_and_export(self):
+    def test_completed_session_zip_contains_artifacts_and_excludes_runtime_state(self):
         self.create(runtime="demo")
+        archive_url = self.base + self.prefix + "/export.zip"
+        with self.assertRaises(HTTPError) as blocked:
+            urlopen(archive_url, timeout=5)
+        self.assertEqual(blocked.exception.code, 409)
+        blocked.exception.close()
+        original_log = json.dumps({"messages": [{"role": "user", "content": "A prior interaction",
+                                                  "timestamp": "2026-10-13T00:00:01Z"}]}).encode()
+        upload_code, upload = self.request("/api/upload", original_log, "POST", {"X-Filename": "prior-chat.json"}, raw=True)
+        self.assertEqual(upload_code, 200)
+        self.assertEqual(self.request(self.prefix + "/import", {"upload_id": upload["upload_id"]}, "POST")[0], 200)
+        root = self.store.path.parent
+        workspace = root / "workspaces" / self.sid
+        workspace.mkdir(parents=True)
+        (workspace / "notes.txt").write_text("Participant work", encoding="utf-8")
+        (workspace / ".runtime").mkdir()
+        (workspace / ".runtime" / "native-state.json").write_text("do not export", encoding="utf-8")
+        (root / "recordings" / f"{self.sid}.webm").write_bytes(b"recorded-video")
         with server.LOCK:
             s = self.store.load(self.sid)
+            ev = server.add_event(s, "assistant", "Consider a third option")
+            s["recording"] = {"file": f"{self.sid}.webm", "status": "ready"}
+            self.store.save(s)
+        self.assertEqual(self.request(self.prefix + "/advance", {"phase": "chat"}, "POST")[0], 200)
+        self.assertEqual(self.request(self.prefix + "/advance", {"phase": "post", "text": "Revised position"}, "POST")[0], 200)
+        code, mark = self.request(self.prefix + "/marks", {"event_id": ev["id"], "anchor": "message"}, "POST")
+        self.assertEqual(code, 201)
+        self.assertEqual(self.request(self.prefix + "/marks/" + mark["id"],
+                                      {"review": {"decision": "confirmed", "after": "I considered another option"}}, "PATCH")[0], 200)
+        self.assertEqual(self.request(self.prefix + "/review/complete-independent", {}, "POST")[0], 200)
+        self.assertEqual(self.request(self.prefix + "/advance", {"phase": "review"}, "POST")[0], 200)
+        with urlopen(archive_url, timeout=5) as response:
+            self.assertEqual(response.headers.get_content_type(), "application/zip")
+            self.assertIn(f"spark-session-{self.sid}.zip", response.headers["Content-Disposition"])
+            payload = response.read()
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            names = set(archive.namelist())
+            self.assertTrue({"manifest.json", "session.json", "transcript.md", "conversation/events.jsonl",
+                             "participant/before.txt", "participant/after.txt", "participant/moments.json",
+                             "analysis/judge-runs.json", "runtime/trace.jsonl", "workspace/notes.txt",
+                             f"recording/{self.sid}.webm", f"imports/{upload['upload_id']}/prior-chat.json"}.issubset(names))
+            self.assertNotIn("workspace/.runtime/native-state.json", names)
+            self.assertEqual(archive.read("participant/before.txt"), b"Private baseline")
+            self.assertEqual(archive.read("participant/after.txt"), b"Revised position")
+            self.assertEqual(archive.read(f"recording/{self.sid}.webm"), b"recorded-video")
+            self.assertEqual(archive.read("workspace/notes.txt"), b"Participant work")
+            self.assertEqual(archive.read(f"imports/{upload['upload_id']}/prior-chat.json"), original_log)
+            exported = json.loads(archive.read("session.json"))
+            self.assertEqual(exported["phase"], "done")
+            self.assertEqual(exported["marks"][0]["review"]["after"], "I considered another option")
+            self.assertIn("record_history", exported)
+            self.assertIn("runtime_trace", exported)
+            manifest = json.loads(archive.read("manifest.json"))
+            self.assertEqual(manifest["session_id"], self.sid)
+            self.assertFalse(manifest["omitted"])
+
+    def test_highlights_api_persist_lock_and_export(self):
+        created = self.create(runtime="demo")
+        self.assertFalse(created["config_snapshot"]["annotation"]["highlights"]["enabled"])
+        with server.LOCK:
+            s = self.store.load(self.sid)
+            # Legacy sessions can still edit and export existing highlights.
+            s["config_snapshot"]["annotation"]["highlights"]["enabled"] = True
             ev = server.add_event(s, "assistant", "Consider the stakeholder you skipped.")
             self.store.save(s)
         self.request(self.prefix+"/advance", {"phase":"chat"}, "POST")

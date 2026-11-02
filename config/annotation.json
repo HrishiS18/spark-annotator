@@ -1,7 +1,7 @@
 {
-  "_comment": "Open-ended highlight annotation. These are defaults; a study in studies.json can override any key under an \"annotation\" object. Each new session snapshots the merged settings, so later edits here never change how an existing session validates or displays. Highlights record exact character spans (code points) of transcript text, tool output, or the participant's written answers, each with an optional note and free tags. Spans are the stable unit; any category scheme is applied later and can change without re-annotation.",
+  "_comment": "The separate highlight workflow is retired. New sessions disable it; existing highlight records and exports remain readable. These defaults can still be overridden for legacy studies, and each session snapshots its settings.",
   "highlights": {
-    "enabled": true,
+    "enabled": false,
     "standalone": true,
     "live_selection_offsets": true,
     "live_selection_min_chars": 3,

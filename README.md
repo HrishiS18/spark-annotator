@@ -4,15 +4,7 @@ Local research prototype for **sparks**: participant-perceived valuable ideas or
 
 ## Recent additions
 
-**Open-ended highlight annotation** (details under Participant flow and Storage / exports):
-
-- Participants can highlight any words or passages in transcript messages, tool output, or their own before/after answers, as standalone highlights or as part of a moment, each with a note and free tags. Selection actions: **Add to open moment**, **Highlight**, **New moment**, and **Use as new boundaries** while adjusting.
-- A **Your highlights** panel on the review page: jump-to-text, autosaved notes, tag chips with suggestions from the participant's own earlier tags, a moment menu, **Adjust** and **Remove**. Clicking highlighted text jumps to its card.
-- Highlights lock with the independent pass. A confirmed model suggestion becomes editable highlights on the new moment, so boundary corrections are recorded.
-- Spans are exact character offsets checked against the stored text; any category scheme can be applied later without re-annotating.
-- `highlights.csv` export and full version history in the session JSON. The judge never sees highlights.
-- All limits, allowed targets, tag-suggestion scope, and participant wording live in `config/annotation.json`; studies can override them, and each session snapshots its settings. Set `highlights.enabled` to `false` for the previous review page.
-- Live **Mark this** selections store exact offsets when the text matches the stored message uniquely.
+**Passage marking:** Participants can select exact text during the conversation or review and mark it as a moment. The separate, open-ended **Your highlights** workflow has been removed from participant review. New sessions disable highlight creation; older records remain in the research exports. Live **Mark this** selections still store exact offsets when the text matches the stored message uniquely.
 
 **Study option:** `agent_instructions` in `studies.json` gives the agent the question directly instead of pointing it at `TASK.md`. The dilemma study uses it, so the agent replies without opening files.
 
@@ -24,17 +16,33 @@ Local research prototype for **sparks**: participant-perceived valuable ideas or
 - Attaching a quote inside a moment's chosen passage keeps that passage.
 - "Bookmarks saved" no longer overlaps the final-answer box; the voice disclosure on the setup page shows only for Voice chat.
 
-## Start locally
+## Quick start: try it locally with Codex
 
-```bash
-cd spark-annotator
-python3 -m venv .venv
-.venv/bin/python server.py
-```
+This prototype runs **on each tester's own Mac**; sharing a `127.0.0.1` link from another computer will not work. You need macOS, Python 3.10 or newer, Git, a modern browser, and a Codex account. You do **not** need the ChatGPT desktop app, an OpenAI API key, Node, or the Python packages in `requirements.txt` for a Codex-only test.
 
-Open http://127.0.0.1:8765. The two integrated AI choices are **Codex app-server** and **Claude Agent SDK**. Both use their native agent loops with streamed messages, command/file tools, approvals, a task workspace, and interrupt/resume controls. The default remains Codex.
+1. [Install Codex CLI](https://learn.chatgpt.com/docs/cli) if you do not already have it. Then sign in with your own ChatGPT account (or your own API key) and check that it worked:
 
-Codex must be installed on the execution host and signed in (`codex login`). The macOS desktop-app executable is detected if absent from PATH. Existing Codex/ChatGPT login works for local development; API-key authentication is also supported by the agent bridge using server-side configuration. Never put keys in participant messages or configuration files.
+   ```bash
+   codex login
+   codex login status
+   ```
+
+2. Download the app and start its local server:
+
+   ```bash
+   git clone https://github.com/HrishiS18/spark-annotator.git
+   cd spark-annotator
+   python3 -m venv .venv
+   .venv/bin/python server.py
+   ```
+
+3. Open **http://127.0.0.1:8765** on that Mac. Choose a moral-dilemma question, **AI agent → Codex**, and text or voice. For voice, allow microphone access when your browser asks. Finish the session to download a ZIP of its transcript, answers, and annotations; send that ZIP to the researcher if requested. Press **Ctrl+C** in Terminal to stop the server.
+
+If `codex` is not found in Terminal but the ChatGPT desktop app is installed, this app can also detect its bundled Codex executable on macOS. A fresh CLI install is the simpler setup. Codex voice depends on a compatible Codex build and account; test it on the actual machine before using it in a study. If Codex works but optional model-generated suggestions do not appear, check the separate judge model/account configuration below.
+
+The two integrated AI choices are **Codex app-server** and **Claude Agent SDK**. Both use their native agent loops with streamed messages, command/file tools, approvals, a task workspace, and interrupt/resume controls. Codex is the default. Claude is optional and needs the separate setup below.
+
+Do not put API keys in participant messages or configuration files. Each local copy saves its own study data in `data/` (ignored by Git); it does not automatically upload sessions to the researcher. This is for trusted local testing, not a public or multi-user deployment.
 
 Codex sessions use the built-in `:workspace` permission profile with `on-request` approvals: routine reads, edits, and commands inside the task workspace run automatically. Codex prompts only when an action must cross that boundary, and a participant can allow a matching request once or for the rest of the session. The setup page discloses this fixed study permission profile up front; participants do not choose different profiles within a condition. [Official permissions reference](https://learn.chatgpt.com/docs/permissions).
 
@@ -42,7 +50,7 @@ New participant sessions cannot select plain LLM chat or scripted demo. Existing
 
 ### Codex voice mode
 
-On the main session setup form, choose **Codex → Conversation mode → Voice chat**. When the participant enters the conversation, the voice interface opens and connects automatically; the microphone button remains available to retry or restart it. The browser keeps the transcript and composer visible, with a voice orb above the composer and microphone/stop controls inside it. The study's **Mark moment** control remains available. WebRTC connects to Codex's own thread-scoped realtime voice path, pinned to protocol v3 on the tested build. Codex still owns the voice model, agent tools, and handoffs; this app does not implement a separate speech agent or route voice through the text-chat endpoint. The app stores transcript segments and tool activity for review, but does not itself store microphone audio. Microphone access requires localhost or HTTPS; the browser may ask the participant to allow it and, if autoplay is blocked, to enable sound. Voice is not available for Claude or human-partner sessions in this prototype.
+On the main session setup form, choose **Codex → Conversation mode → Voice chat**. When the participant enters the conversation, the voice interface opens and connects automatically; the microphone button remains available to retry or restart it. The browser keeps the transcript and composer visible, with a voice orb above the composer and microphone/stop controls inside it. The study's **Mark moment** control remains available. WebRTC connects to Codex's own thread-scoped realtime voice path, pinned to protocol v3 on the tested build. At voice startup, the session's task and persona instructions are supplied as a native `initialItems` developer message so the voice frontend knows the task before a Codex handoff. The participant's private baseline is not supplied. Codex still owns the voice model, agent tools, and handoffs; this app does not implement a separate speech agent or route voice through the text-chat endpoint. The app stores transcript segments and tool activity for review, but does not itself store microphone audio. Microphone access requires localhost or HTTPS; the browser may ask the participant to allow it and, if autoplay is blocked, to enable sound. Voice is not available for Claude or human-partner sessions in this prototype.
 
 This is a screenshot-informed visual simulation, not the Codex desktop frontend. In this prototype, typing while voice is active leaves a draft in the composer; stop voice before sending it. The app-server voice protocol is experimental, so test the exact installed Codex build and account before a study. The live smoke test below uses synthetic speech and a temporary study database. [Codex app-server protocol](https://learn.chatgpt.com/docs/app-server), [ChatGPT Voice](https://learn.chatgpt.com/docs/features/voice).
 
@@ -71,7 +79,9 @@ The participant landing page is session setup only. Persona controls are under *
 During interaction:
 
 - One-click, taxonomy-free bookmarking. A live mark never opens a category menu.
+- The bulb beside a message (or an exact selected passage) toggles that mark on and off; repeated clicks do not create duplicate moments. **Undo last** also removes the most recent live mark. The main **Mark moment** control ignores an accidental second click within two seconds.
 - Selecting text and choosing **Mark this** stores exact character offsets when the text matches the stored message uniquely; otherwise the quote is kept without offsets and the bookmark is never rejected.
+- Drag-selecting text across consecutive messages offers **Mark exchange** as one mark for the whole exchange. The start/end event IDs and a rendered-text snapshot (up to 24 messages) are retained; the participant is not required to identify a single turning-point message. A saved exchange can be unmarked during the conversation or reviewed and adjusted later.
 - Stable IDs, original click timestamps, durable browser outbox, automatic retry, honest pending/saved feedback.
 - An integrated bookmark captures displayed message/tool text at click, including partial output. It is a display snapshot, **not evidence the participant read it**.
 - Timestamp-only clicks are not automatically attributed to the last assistant message.
@@ -83,9 +93,9 @@ Review is the same transcript-first interface for integrated and external sessio
 - Before-state, perceived value, uptake, later helpfulness, latency, and shift size are optional; the participant is not asked to choose a spark type. Historical category data remains in researcher exports.
 - Select any ordered multi-event passage, including the participant's own messages. Highlight exact text in the transcript to attach it to an existing moment or create a new one; event ID and character offsets are retained and checked against the source text.
 - Add missed moments without requiring a video.
-- **Open-ended highlights.** Select any words or passages — in transcript messages, tool output, or the participant's own before/after answers — and either keep them as standalone highlights or add them to a moment. Each highlight has its own note and free tags in the participant's words (suggestions come only from that participant's earlier tags). Highlights can be re-bounded with **Adjust**; every earlier boundary, note, and tag set stays in the record history. A moment's first transcript quote remains its main `quote_selection`; further text becomes linked highlights.
-- Highlights belong to the independent pass and lock with it. Confirming a model suggestion turns its trigger/uptake passages into editable highlights on the new moment, so boundary corrections are recorded.
-- Limits, allowed targets, tag-suggestion scope, standalone highlights, and participant wording are set in `config/annotation.json`; a study can override any key with an `annotation` object in `studies.json`. Each session snapshots its merged settings at creation.
+- **Unmark** removes a moment before the independent review is locked. Removed moments remain in the research history but do not count as active marks.
+- Selecting text in the review transcript offers **Use for open moment** or **Mark as new moment**. Exact text offsets remain attached to the moment, and the original live mark is preserved if the review passage is adjusted.
+- New sessions disable the retired standalone highlight workflow. Existing highlight records remain available in researcher exports and are not deleted or converted into marks.
 - Drafts autosave to the server and recover locally after interruption. Final submission is distinct from draft saving.
 - Revision checks reject stale edits from another tab; earlier answers remain in history.
 - Finish the independent pass to lock its answers **before** seeing LLM suggestions.
@@ -163,7 +173,8 @@ Imported timestamp alignment supplies contextual suggestions, not confirmed caus
 - SQLite transactions and revision checks; full historical analysis runs and archived responses.
 - Re-import preserves event identities, prior evidence, and annotations.
 - Workspaces: `data/workspaces/<session-id>/`; uploaded logs: `data/uploads/`; video: `data/recordings/`.
-- Full session JSON includes research history/runtime traces; CSV exports contain current participant annotations, highlights (`highlights.csv`: span, target, note, tags, linked moment, independent-pass flag, version), and LLM candidates. CSV text fields are abbreviated; use JSON/full transcript for full evidence.
+- Full session JSON includes research history/runtime traces; CSV exports contain current participant annotations, legacy highlights when present (`highlights.csv`), and LLM candidates. CSV text fields are abbreviated; use JSON/full transcript for full evidence.
+- Finishing a session automatically downloads `spark-session-<id>.zip` (with a manual link on the completion screen). It contains full session JSON and version history, a readable transcript, event and runtime-trace JSONL, before/after answers, participant moments and reviews, legacy highlights, judge runs, any available recording and imported raw logs, and task workspace files. `manifest.json` records any missing legacy raw imports. Native agent `.runtime` state is excluded. The ZIP may contain sensitive conversation or workspace content; review it before sharing. The download is generated from the server's current data; a browser download is not a substitute for the server-side database/recording backup.
 - Browser localStorage temporarily contains unsynced bookmarks and review drafts. Consider shared-device cleanup and retention in the study protocol.
 
 Back up SQLite using a SQLite-aware backup or with the server stopped. Copying the database without its active WAL is not a reliable backup. All `data/` is git-ignored.
@@ -220,7 +231,7 @@ parsers.py            external log normalization (not inference)
 transcript.py         full timestamped transcript rendering
 static/bookmarks.js   durable retry outbox and click snapshots
 static/review_forms.js autosave, conflict checks, optional review fields
-static/highlights.js  open-ended highlight panel, notes/tags, span painting
+static/highlights.js  span-painting helpers and legacy highlight implementation
 static/               participant/researcher/recorder/review interfaces
 config/               taxonomy, study templates, personas, annotation settings
 tests/                synthetic unit/API/browser/live verification

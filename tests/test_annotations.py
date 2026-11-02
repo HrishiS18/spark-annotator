@@ -18,9 +18,46 @@ class AnnotationTests(unittest.TestCase):
 
     def test_timestamp_bookmark_does_not_infer_latest_agent_trigger(self):
         self.assertIsNone(self.m["event_id"])
+        self.assertEqual(self.m["original_anchor"]["anchor"], "timestamp")
+        self.assertIsNone(self.m["original_anchor"]["event_id"])
         self.assertEqual(self.m["phase"], "chat")
         self.s["events"][0]["text"] = "Finished output"
         self.assertEqual(self.m["exposure"]["events"][0]["rendered_text"], "Partial")
+
+    def test_live_message_and_exact_selection_are_deduplicated(self):
+        message = {"source": "overlay", "anchor": "message", "event_id": "e1"}
+        marked = annotations.create_mark(self.s, message, "m_87654321")
+        self.assertIs(annotations.duplicate_live_mark(self.s, message), marked)
+        selected = {"source": "overlay", "anchor": "selection", "event_id": "e1", "quote": "Partial",
+                    "quote_selection": {"event_id": "e1", "start": 0, "end": 7, "text": "Partial"}}
+        selected_mark = annotations.create_mark(self.s, selected, "m_22222222")
+        self.assertIs(annotations.duplicate_live_mark(self.s, selected), selected_mark)
+        self.assertIsNone(annotations.duplicate_live_mark(self.s, {**selected, "quote": "output",
+            "quote_selection": {"event_id": "e1", "start": 8, "end": 14, "text": "output"}}))
+        annotations.patch_mark(self.s, selected_mark, {"deleted": True}, set())
+        self.assertIsNone(annotations.duplicate_live_mark(self.s, selected))
+
+    def test_exchange_is_one_mark_spanning_visible_messages(self):
+        episode = {"start_event_id": "e1", "end_event_id": "e2"}
+        body = {"source": "overlay", "anchor": "exchange", "event_id": "e1", "episode": episode,
+                "exposure": {"events": [{"event_id": "e1", "rendered_text": "Partial output"},
+                                        {"event_id": "e2", "rendered_text": "My realization"}]}}
+        mark = annotations.create_mark(self.s, body, "m_abcdef12")
+        self.assertEqual(mark["episode"], episode)
+        self.assertEqual(mark["original_anchor"]["episode"], episode)
+        self.assertEqual(len(mark["exposure"]["events"]), 2)
+        self.assertIs(annotations.duplicate_live_mark(self.s, body), mark)
+        self.assertIsNone(annotations.duplicate_live_mark(self.s, {**body, "episode": {"start_event_id": "e2", "end_event_id": "e2"}}))
+        with self.assertRaises(ValueError):
+            annotations.create_mark(self.s, {**body, "episode": {"start_event_id": "e1", "end_event_id": "e1"}}, "m_bad1234")
+        self.s["events"].insert(1, {"id": "hidden", "role": "thinking", "text": "Private"})
+        with self.assertRaises(ValueError):
+            annotations.create_mark(self.s, {**body, "episode": {"start_event_id": "e1", "end_event_id": "hidden"}}, "m_bad5678")
+        with self.assertRaises(ValueError):
+            annotations.patch_mark(self.s, mark, {"episode": None}, set())
+        self.s["events"].append({"id": "e3", "role": "assistant", "text": "Another view"})
+        annotations.patch_mark(self.s, mark, {"episode": {"start_event_id": "e2", "end_event_id": "e3"}}, set())
+        self.assertEqual(mark["original_anchor"]["episode"], episode)
 
     def test_passage_can_span_agent_and_participant_without_rewriting_click(self):
         click = self.m["t"]

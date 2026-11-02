@@ -26,7 +26,7 @@ def exposure(body, valid_ids):
     if not isinstance(value, dict):
         raise ValueError("Invalid exposure snapshot")
     captured = []
-    for row in value.get("events", [])[:6]:
+    for row in value.get("events", [])[:24]:
         if not isinstance(row, dict) or row.get("event_id") not in valid_ids:
             continue
         captured.append({"event_id": row["event_id"], "rendered_text": str(row.get("rendered_text", ""))[:6000],
@@ -79,13 +79,45 @@ def create_mark(s, body, mid):
     if body.get("episode"):
         m["episode"] = validate_episode(s, body["episode"])
         m["event_id"] = m["episode"]["start_event_id"]
+    if m["anchor"] == "exchange":
+        validate_exchange_episode(s, m.get("episode"))
     if body.get("reference_t") is not None:
         reference = float(body["reference_t"])
         if not math.isfinite(reference) or reference < 0 or reference > received + 86400:
             raise ValueError("Invalid reference time")
         m["reference_t"] = reference
+    m["original_anchor"] = {"anchor": m["anchor"], "event_id": m["event_id"],
+                            "quote": m["quote"], "quote_selection": copy.deepcopy(m.get("quote_selection")),
+                            "episode": copy.deepcopy(m.get("episode"))}
     s["marks"].append(m)
     return m
+
+
+def duplicate_live_mark(s, body):
+    """A message, exact selection, or exchange has one active live bookmark per session."""
+    anchor = body.get("anchor")
+    if body.get("source", "overlay") != "overlay" or anchor not in ("message", "selection", "exchange"):
+        return None
+    event_id = (body.get("episode") or {}).get("start_event_id") if anchor == "exchange" else body.get("event_id")
+    if not event_id:
+        return None
+    for mark in s["marks"]:
+        if (mark.get("deleted") or mark.get("source") != "overlay" or
+                mark.get("anchor") != anchor or mark.get("event_id") != event_id):
+            continue
+        if anchor == "message":
+            return mark
+        if anchor == "exchange":
+            if mark.get("episode") == body.get("episode"):
+                return mark
+            continue
+        first, second = mark.get("quote_selection"), body.get("quote_selection")
+        if first and second:
+            if first.get("start") == second.get("start") and first.get("end") == second.get("end"):
+                return mark
+        elif mark.get("quote") and mark.get("quote") == body.get("quote"):
+            return mark
+    return None
 
 
 def validate_episode(s, episode):
@@ -96,6 +128,15 @@ def validate_episode(s, episode):
     if start not in index or end not in index or index[start] > index[end]:
         raise ValueError("Select a valid, ordered passage")
     return {"start_event_id": start, "end_event_id": end}
+
+
+def validate_exchange_episode(s, episode):
+    if not episode or episode["start_event_id"] == episode["end_event_id"]:
+        raise ValueError("Select at least two messages for an exchange")
+    visible = {e["id"] for e in s["events"] if e.get("role") in
+               {"user", "assistant", "partner", "tool_call", "tool_result"} and not (e.get("meta") or {}).get("superseded")}
+    if episode["start_event_id"] not in visible or episode["end_event_id"] not in visible:
+        raise ValueError("Exchange endpoints must be visible messages")
 
 
 def validate_quote_selection(s, selection):
@@ -161,11 +202,16 @@ def patch_mark(s, m, body, type_keys):
         if expected is not None and expected != m.get("review_version", 0):
             raise ConflictError("Another tab changed this review. Your local draft has not been overwritten.")
     if "episode" in body:
-        m["episode"] = validate_episode(s, body["episode"]) if body["episode"] else None
+        episode = validate_episode(s, body["episode"]) if body["episode"] else None
+        if m.get("anchor") == "exchange":
+            validate_exchange_episode(s, episode)
+        m["episode"] = episode
         m["event_id"] = m["episode"]["start_event_id"] if m["episode"] else None
     if "event_id" in body:
         if body["event_id"] is not None and body["event_id"] not in {e["id"] for e in s["events"]}:
             raise ValueError("Unknown event anchor")
+        if m.get("anchor") == "exchange" and body["event_id"] != m["episode"]["start_event_id"]:
+            raise ValueError("Exchange anchor must be its first message")
         m["event_id"] = body["event_id"]
     if "quote_selection" in body:
         m["quote_selection"] = validate_quote_selection(s, body["quote_selection"])
@@ -173,6 +219,18 @@ def patch_mark(s, m, body, type_keys):
     for key in ("quick_type", "deleted"):
         if key in body:
             m[key] = body[key]
+    if body.get("deleted") is True:
+        # Keep a participant's selected evidence even if its moment is removed.
+        # The old link remains in the SQLite revision history.
+        standalone = settings(s)["highlights"]["standalone"]
+        for h in s.get("highlights", []):
+            if h.get("mark_id") == m["id"] and not h.get("deleted"):
+                if standalone:
+                    h["mark_id"] = None
+                else:
+                    h["deleted"] = True
+                h["version"] += 1
+                h["updated_at"] = iso(time.time())
     if "review_draft" in body:
         m["review_draft"] = dict(validate_review(body["review_draft"], type_keys), saved_at=iso(time.time()))
         # Editing a submitted answer makes it a draft again until confirmed.

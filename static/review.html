@@ -15,7 +15,7 @@
     <div class="topbar-right" id="actions"></div>
   </header>
   <div class="rv-body">
-    <section class="rv-left">
+    <section class="rv-left" id="rv-left-panel">
       <div class="player" id="player"></div>
       <div class="track-wrap">
         <div class="track" id="track"><div class="track-line"></div><div class="playhead" id="playhead"></div></div>
@@ -29,11 +29,11 @@
       </div>
       <div class="rv-transcript" id="transcript"></div>
     </section>
-    <aside class="rv-right">
+    <div class="rv-divider" id="review-divider" role="separator" aria-label="Resize transcript and reflection panels" aria-orientation="vertical" aria-controls="rv-left-panel rv-right-panel" tabindex="0"></div>
+    <aside class="rv-right" id="rv-right-panel">
       <div id="review-next"></div>
       <div id="intro"></div>
       <div id="flags"></div>
-      <div id="highlights" class="hl-panel"></div>
       <div id="suggestions"></div>
     </aside>
   </div>

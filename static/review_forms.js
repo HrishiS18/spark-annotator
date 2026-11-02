@@ -14,35 +14,36 @@ const tabId = (() => {
 
 export function annotationFormHTML(cfg, m, events) {
   const draft = m.review_draft || m.review || {};
+  const timestampOnly = ['timestamp', 'review_timestamp'].includes(m.anchor);
   const select = (field, label, rows) => `<label class="field"><span>${label}</span><select data-f="${field}">
-    <option value="">Optional / unsure</option>${rows.map(([key, title]) => `<option value="${key}" ${String(draft[field]) === String(key) ? "selected" : ""}>${esc(title)}</option>`).join("")}</select></label>`;
+    <option value="">Select answer</option>${rows.map(([key, title]) => `<option value="${key}" ${String(draft[field]) === String(key) ? "selected" : ""}>${esc(title)}</option>`).join("")}</select></label>`;
   let turn = 0;
   const options = `<option value="">Timestamp only / while composing</option>` + events.filter(e => e.role !== "thinking").map(e =>
     `<option value="${e.id}">${CONVERSATION_ROLES.includes(e.role) ? `${++turn}. ${esc(e.role)}` : `↳ ${esc(e.role.replace("_", " "))}`} — ${esc(plainText(e.text).slice(0, 65))}</option>`).join("");
   return `<div class="annot">
-    <div class="qlabel">Did anything about this moment change how you thought about the task?</div>
-    <div class="chips" data-group="decision">
+    <div class="qlabel" id="decision-label-${esc(m.id)}">Did this moment give you an idea or change how you thought about the task? <span class="required-mark" aria-hidden="true">*</span><span class="sr-only"> Required</span></div>
+    <div class="chips" data-group="decision" role="group" aria-labelledby="decision-label-${esc(m.id)}">
       <button class="chip" data-decision="confirmed">Yes</button><button class="chip" data-decision="unsure">Unsure</button>
       <button class="chip" data-decision="rejected">No / just a bookmark</button>
     </div>
-    <label class="field insight-field"><span>What changed, if anything? <span class="muted">Briefly, in your own words.</span></span>
-      <textarea data-f="after" maxlength="6000" placeholder="I noticed… / I reconsidered…">${esc(draft.after || "")}</textarea></label>
-    <div class="passage-picker"><div class="qlabel">Which passage does this relate to? <span class="muted">Optional; can include your own message. Select exact text in the transcript to highlight it.</span></div>
+    <label class="field insight-field"><span>What changed in your thinking? <span class="required-mark hidden" data-after-required aria-hidden="true">*</span><span class="muted">What had you thought before, and what did you consider afterward?</span></span>
+      <textarea data-f="after" maxlength="6000" placeholder="Before, I thought… Then I considered…">${esc(draft.after || "")}</textarea></label>
+    <details class="passage-picker passage-adjust" data-adjust-passage><summary>${timestampOnly ? 'Was a specific message or exchange involved? (optional)' : 'Not the right passage? Adjust mark'}</summary>
+      <p class="small muted">This updates your review, not when or what you originally marked. Leaving the passage blank is fine.</p>
       <div class="two"><label class="field"><span>From</span><select data-start>${options}</select></label>
       <label class="field"><span>Through</span><select data-end>${options}</select></label></div>
       <div class="quote-context" data-quote-context></div>
-      <div class="linked-highlights" data-linked-highlights></div>
       <button class="btn btn-sm btn-ghost hidden" data-clear-quote>Clear highlighted text</button>
       <div class="passage-context" data-context></div>
-    </div>
-    <details class="optional-review"><summary>Optional follow-up details</summary>
+    </details>
+    <section class="optional-review" aria-label="Optional follow-up details"><div class="qlabel">Optional follow-up details</div>
       <label class="field"><span>Before this moment, what were you thinking?</span><textarea data-f="before" maxlength="6000">${esc(draft.before || "")}</textarea></label>
       ${select("perceived_value", "How valuable did it feel at the time?", [[1,"1 — little value"],[2,"2"],[3,"3"],[4,"4"],[5,"5 — very valuable"]])}
       ${select("uptake", "Did you use the idea?", [["used","I used or built on it"],["not_used","I did not use it"],["unclear","Not sure"]])}
       ${select("outcome", "Did it seem to help later in the session?", [["helped","It seemed to help"],["did_not_help","It did not seem to help"],["not_yet_known","Too early to tell"],["unclear","Not sure"]])}
       ${select("latency", "When did it click?", [["immediate","At the time"],["delayed","Later in the conversation"],["review","Only now, during review"],["unclear","Not sure"]])}
       ${select("intensity", "How much did it change your thinking?", [[1,"1 — small shift"],[2,"2"],[3,"3"],[4,"4"],[5,"5 — large shift"]])}
-    </details>
+    </section>
     <div class="row review-save-row"><span class="small grow" data-save-state aria-live="polite">Drafts save automatically</span>
       <button class="btn btn-primary btn-sm" data-save>Confirm review</button><button class="btn btn-sm hidden" data-retry>Retry save</button>
       <button class="btn btn-sm hidden" data-replace>Replace saved version with my draft</button></div>
@@ -66,6 +67,10 @@ export function wireAnnotationForm(root, m, { sid, events, locked = false, onSav
   let quoteDirty = !!local?.quoteDirty;
   const paint = () => {
     $$('[data-decision]', root).forEach(b => b.classList.toggle("on", b.dataset.decision === state.decision));
+    for (const selector of ['.insight-field', '.passage-adjust', '.optional-review'])
+      $(selector, root).classList.toggle('hidden', state.decision === 'rejected');
+    $('[data-after-required]', root).classList.toggle('hidden', state.decision !== 'confirmed');
+    $('[data-f="after"]', root).required = state.decision === 'confirmed';
   };
   const status = message => { $('[data-save-state]', root).textContent = message; };
   const remember = () => {
@@ -79,7 +84,9 @@ export function wireAnnotationForm(root, m, { sid, events, locked = false, onSav
   const context = () => {
     const a = events.findIndex(e => e.id === start), b = events.findIndex(e => e.id === end);
     const selected = a >= 0 && b >= a ? events.slice(a, b + 1) : [];
-    $('[data-context]', root).innerHTML = selected.map(e => `<details ${selected.length === 1 ? "open" : ""}><summary>${esc(e.role)} · ${esc(plainText(e.text).slice(0, 80))}</summary><pre>${esc(plainText(e.text))}</pre></details>`).join("") || `<p class="small muted">Choose the relevant message or passage on the left, or leave this as a timestamp-only moment.</p>`;
+    const shown = m.anchor === 'exchange' ? selected.filter(e => !e.meta?.superseded && (CONVERSATION_ROLES.includes(e.role) || ['tool_call', 'tool_result'].includes(e.role))) : selected;
+    $('[data-context]', root).innerHTML = (m.anchor === 'exchange' && shown.length ? `<p class="small muted">Marked exchange · ${shown.length} messages</p>` : '') +
+      (shown.map(e => `<details ${shown.length <= 3 ? "open" : ""}><summary>${esc(e.role)} · ${esc(plainText(e.text).slice(0, 80))}</summary><pre>${esc(plainText(e.text))}</pre></details>`).join("") || `<p class="small muted">No specific message selected. You can leave it that way.</p>`);
     $('[data-quote-context]', root).innerHTML = quoteSelection
       ? `<span class="small muted">Highlighted text from ${esc(events.find(e => e.id === quoteSelection.event_id)?.role || 'message')}:</span><blockquote>${esc(quoteSelection.text)}</blockquote>`
       : m.quote && !quoteDirty ? `<span class="small muted">Text selected during the conversation:</span><blockquote>${esc(m.quote)}</blockquote>` : '';
@@ -91,8 +98,8 @@ export function wireAnnotationForm(root, m, { sid, events, locked = false, onSav
     if (node) node.value = state[field] ?? "";
   }
   function capture() {
-    for (const field of ['before','after','uptake','outcome','latency']) state[field] = $(`[data-f="${field}"]`, root).value || null;
-    for (const field of ['perceived_value','intensity']) state[field] = +$(`[data-f="${field}"]`, root).value || null;
+    for (const field of ['before','after','uptake','outcome','latency']) state[field] = state.decision === 'rejected' ? null : $(`[data-f="${field}"]`, root).value || null;
+    for (const field of ['perceived_value','intensity']) state[field] = state.decision === 'rejected' ? null : +$(`[data-f="${field}"]`, root).value || null;
     start = $('[data-start]', root).value; end = $('[data-end]', root).value;
     state.primary = state.types?.[0] || null;
     state.editor_id = editorId; state.editor_seq = seq;
@@ -108,8 +115,14 @@ export function wireAnnotationForm(root, m, { sid, events, locked = false, onSav
     if (locked || blocked) return false;
     if (operation) { await operation; if (blocked) return false; }
     capture();
-    if (final && (!state.decision || state.decision === 'confirmed' && !String(state.after || '').trim())) {
-      status("Choose Yes / Unsure / No, and briefly describe a confirmed change."); $('[data-f="after"]', root).focus(); return false;
+    if (m.anchor === 'exchange' && (!start || !end || events.findIndex(e => e.id === start) >= events.findIndex(e => e.id === end))) {
+      status('Choose at least two messages in order for this exchange.'); return false;
+    }
+    if (final && !state.decision) {
+      status("Choose Yes, Unsure, or No."); $('[data-decision]', root).focus(); return false;
+    }
+    if (final && state.decision === 'confirmed' && !String(state.after || '').trim()) {
+      status("Briefly describe what changed in your thinking."); $('[data-f="after"]', root).focus(); return false;
     }
     if (final) { seq++; capture(); }
     const sentSeq = seq, payload = structuredClone(state);
@@ -180,15 +193,13 @@ export function wireAnnotationForm(root, m, { sid, events, locked = false, onSav
     async flush() { if (operation) await operation; return !blocked && (!dirty || await save(false)); },
     submit: () => save(true),
     needsSave: () => !locked && (blocked || !!operation || dirty),
-    selectPassage(a, b = a) { if (locked) return; start = a; end = b; $('[data-start]', root).value = a; $('[data-end]', root).value = b; changed(); context(); },
     selectQuote(selection) {
       if (locked) return;
       quoteSelection = selection; quoteDirty = true;
       const at = events.findIndex(e => e.id === selection.event_id);
       const a = events.findIndex(e => e.id === start), b = events.findIndex(e => e.id === end);
       if (!(a >= 0 && b >= a && at >= a && at <= b)) start = end = selection.event_id;  // keep a passage that already contains it
-      $('[data-start]', root).value = start; $('[data-end]', root).value = end; changed(); context(); },
-    startId: () => start,
+      $('[data-start]', root).value = start; $('[data-end]', root).value = end; $('[data-adjust-passage]', root).open = true; changed(); context(); },
     hasQuote: () => !!(quoteSelection || (m.quote && !quoteDirty)),
     lock() { locked = true; clearTimeout(timer); root.closest('.review-card')?.classList.add('read-only'); $$('.annot button,.annot input,.annot textarea,.annot select', root).forEach(n => n.disabled = true); status('Review locked'); },
     dispose() { clearTimeout(timer); controllers.delete(controller); }

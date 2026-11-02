@@ -5,9 +5,10 @@ from storage import ConflictError
 
 
 def session(**annotation):
+    legacy_settings = annotations._merge(annotations.ANNOTATION, {"highlights": {"enabled": True}})
     return {"id": "s_00000001", "participant_id": "P1", "phase": "review",
             "phase_order": ["pre", "chat", "post", "review", "done"], "marks": [], "highlights": [], "candidates": [],
-            "config_snapshot": {"annotation": annotations._merge(annotations.ANNOTATION, annotation)},
+            "config_snapshot": {"annotation": annotations._merge(legacy_settings, annotation)},
             "writing": {"pre": {"text": "I think promises bind."}, "post": {"text": "Promises bind unless harm is grave."}},
             "events": [{"id": "e1", "role": "assistant", "text": "What if the harm is grave?", "output": None},
                        {"id": "e2", "role": "tool_result", "text": "ran", "output": "exit 0 — ünïcode"},
@@ -86,6 +87,15 @@ class HighlightTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             annotations.patch_highlight(self.s, h, {"expected_version": 3, "start": 0, "end": 3, "text": "nope"})
         self.assertEqual(h["version"], 3)
+
+    def test_unmarking_detaches_linked_highlights(self):
+        m = annotations.create_mark(self.s, {"event_id": "e1", "anchor": "message"}, "m_00000001")
+        h = annotations.create_highlight(self.s, {**span({"kind": "event", "event_id": "e1"}, self.s["events"][0]["text"], "grave"),
+                                                  "mark_id": m["id"]}, "h_00000001")
+        annotations.patch_mark(self.s, m, {"deleted": True}, set())
+        self.assertTrue(m["deleted"])
+        self.assertIsNone(h["mark_id"])
+        self.assertEqual(h["version"], 2)
 
     def test_independent_lock_preserves_highlights_but_allows_suggested_moments(self):
         text = self.s["events"][0]["text"]

@@ -96,6 +96,10 @@ export class Highlighter {
   }
 
   async create(selection, extra = {}) {
+    const existing = this.live().find(h => targetKey(h.target) === targetKey(selection.target) &&
+      h.start === selection.start && h.end === selection.end &&
+      h.mark_id === (extra.mark_id || null) && h.candidate_id === (extra.candidate_id || null));
+    if (existing) return existing;
     const body = { id: "h_" + crypto.randomUUID().replaceAll("-", ""), target: selection.target,
                    start: selection.start, end: selection.end, text: selection.text, ...extra };
     const h = await api("POST", `/api/sessions/${this.sid}/highlights`, body);

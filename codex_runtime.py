@@ -451,10 +451,18 @@ class Worker:
             try:
                 # This is Codex's own thread-scoped voice path. Pin the tested
                 # v3 protocol: this host's app-server default selected an AVAS
-                # path that the provider rejected. The model, voice, startup
-                # context, and automatic handoffs remain Codex-managed.
+                # path that the provider rejected. The model, voice, and
+                # automatic handoffs remain Codex-managed. Give the voice
+                # frontend the same task/persona context as delegated Codex
+                # turns; thread/start developerInstructions alone do not
+                # reliably ground direct spoken replies.
+                snapshot = session["config_snapshot"]
+                task = snapshot.get("agent_instructions") or (
+                    "The participant's task is: " + session["prompt"]["text"])
+                voice_context = snapshot["persona"]["system"] + "\n\n" + task
                 params = {"threadId": self.thread_id, "outputModality": "audio",
-                          "transport": {"type": "webrtc", "sdp": sdp}, "version": "v3"}
+                          "transport": {"type": "webrtc", "sdp": sdp}, "version": "v3",
+                          "initialItems": [{"role": "developer", "text": voice_context}]}
                 self.rpc.request("thread/realtime/start", params, timeout=45)
                 if not self.voice_sdp_event.wait(25):
                     raise RuntimeUnavailable("Codex did not return a voice connection answer")

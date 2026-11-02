@@ -141,12 +141,16 @@ class RuntimeTests(unittest.TestCase):
     def test_native_voice_uses_codex_defaults_and_preserves_transcript(self):
         s = self.store.load(self.sid)
         s["interaction_mode"] = "voice"
+        s["config_snapshot"]["agent_instructions"] = "Discuss this public task: A public task."
         self.store.save(s)
         worker = self.manager.get(self.sid)
         self.assertEqual(worker.start_voice("v=0\r\noffer"), "v=0\r\nanswer")
         start = next(m for m in worker.rpc.sent if m.get("method") == "thread/realtime/start")
         self.assertEqual(start["params"], {"threadId": "thr_test", "outputModality": "audio", "version": "v3",
-                                           "transport": {"type": "webrtc", "sdp": "v=0\r\noffer"}})
+                                           "transport": {"type": "webrtc", "sdp": "v=0\r\noffer"},
+                                           "initialItems": [{"role": "developer",
+                                                             "text": "A public persona\n\nDiscuss this public task: A public task."}]})
+        self.assertNotIn("PRIVATE BASELINE", repr(start))
         self.assertEqual(self.store.load(self.sid)["runtime"]["voice"]["status"], "active")
         with self.assertRaises(RuntimeUnavailable):
             worker.message("Do this in text", "message-voice")

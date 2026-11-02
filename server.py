@@ -16,12 +16,15 @@ import json
 import mimetypes
 import os
 import re
+import tempfile
 import threading
 import time
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import judge
@@ -510,6 +513,72 @@ def candidates_csv():
     return buf.getvalue()
 
 
+def write_session_archive(s, output):
+    """Package one completed session, without native agent state or host secrets."""
+    sid = s["id"]
+    if s["phase"] != "done":
+        raise storage.ConflictError("Finish the session before downloading its archive")
+    s["analysis"] = analysis(s)
+    data_dir = get_store().path.parent
+    omitted = []
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        def write_json(name, value):
+            archive.writestr(name, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+
+        write_json("session.json", s)
+        archive.writestr("transcript.md", transcript.render_markdown(s, TAXONOMY))
+        archive.writestr("conversation/events.jsonl", "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in s["events"]))
+        for phase, name in (("pre", "before"), ("post", "after")):
+            archive.writestr(f"participant/{name}.txt", (s.get("writing", {}).get(phase) or {}).get("text", ""))
+        write_json("participant/moments.json", s["marks"])
+        write_json("participant/highlights-legacy.json", s.get("highlights", []))
+        write_json("analysis/judge-runs.json", s.get("analysis_runs", []))
+        archive.writestr("runtime/trace.jsonl", "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in s["runtime_trace"]))
+
+        recording = (s.get("recording") or {}).get("file")
+        if recording:
+            path = Path(RECORDINGS) / recording
+            if Path(recording).name == recording and recording.startswith(sid + ".") and path.is_file() and not path.is_symlink():
+                archive.write(path, f"recording/{recording}", compress_type=zipfile.ZIP_STORED)
+            else:
+                omitted.append("Recording referenced by session is missing or unsafe to include")
+
+        seen_uploads = set()
+        for item in s.get("imports", []):
+            uid = item.get("upload_id")
+            if not uid:
+                omitted.append(f"Raw import unavailable for legacy record: {item.get('file', 'unnamed')}")
+                continue
+            if uid in seen_uploads:
+                continue
+            seen_uploads.add(uid)
+            path = Path(UPLOADS) / uid
+            if not re.fullmatch(r"[0-9a-f]{12}", uid) or not path.is_file() or path.is_symlink():
+                omitted.append(f"Raw import missing or unsafe to include: {uid}")
+                continue
+            filename = Path(str(item.get("file") or "upload").replace("\\", "/")).name
+            archive.write(path, f"imports/{uid}/{filename if filename not in ('.', '..') else 'upload'}")
+
+        workspace = data_dir / "workspaces" / sid
+        if workspace.exists():
+            workspace_root = (data_dir / "workspaces").resolve()
+            if workspace.is_symlink() or not workspace.resolve().is_relative_to(workspace_root):
+                omitted.append("Task workspace path is unsafe to include")
+            else:
+                for path in sorted(workspace.rglob("*")):
+                    relative = path.relative_to(workspace)
+                    if ".runtime" in relative.parts or not path.is_file() or path.is_symlink():
+                        continue
+                    if not path.resolve().is_relative_to(workspace.resolve()):
+                        omitted.append(f"Workspace file is unsafe to include: {relative.as_posix()}")
+                        continue
+                    archive.write(path, f"workspace/{relative.as_posix()}")
+
+        write_json("manifest.json", {"format": "spark-session-archive/v1", "session_id": sid,
+                                     "created_at": now()[0], "included": archive.namelist(), "omitted": omitted,
+                                     "note": "Native agent .runtime state is excluded. Review workspace files and conversation data for sensitive information before sharing."})
+
+
 # --------------------------------------------------------------------------- HTTP
 
 class StudyHTTPServer(ThreadingHTTPServer):
@@ -689,6 +758,27 @@ class Handler(BaseHTTPRequestHandler):
                     left -= len(chunk)
             except (BrokenPipeError, ConnectionResetError):
                 pass  # the player cancels range requests while seeking
+
+    def _serve_archive(self, sid):
+        session = get_store().export(sid)
+        if session["phase"] != "done":
+            raise storage.ConflictError("Finish the session before downloading its archive")
+        with tempfile.TemporaryFile(dir=get_store().path.parent) as output:
+            write_session_archive(session, output)
+            size = output.tell()
+            output.seek(0)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/zip")
+            self.send_header("Content-Disposition", f'attachment; filename="spark-session-{sid}.zip"')
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.end_headers()
+            try:
+                while chunk := output.read(1 << 20):
+                    self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     # ---- routes
     def _stream(self, sid, query):
@@ -887,6 +977,8 @@ class Handler(BaseHTTPRequestHandler):
             s["analysis"] = analysis(s)
             return self._send(200, s, "application/json",
                               {"Content-Disposition": f"attachment; filename={sid}.json"})
+        if method == "GET" and rest == ["export.zip"]:
+            return self._serve_archive(sid)
 
         body = self._json() if method in ("POST", "PATCH") else {}
 
@@ -1014,6 +1106,9 @@ class Handler(BaseHTTPRequestHandler):
                         existing["client_version"] = int(body.get("client_version", 1))
                     save(s)
                     return self._send(200, existing)
+                duplicate = annotations.duplicate_live_mark(s, body)
+                if duplicate:
+                    return self._send(200, duplicate)
                 if s.get("independent_review") and body.get("source") != "candidate_confirm":
                     raise ValueError("Independent review is locked; new moments must be recorded as follow-up suggestions")
                 m = annotations.create_mark(s, body, cid or new_id("m"))
@@ -1111,7 +1206,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Integrated agent transcripts cannot be replaced with imported logs. Create an external session instead.")
                 imported = storage.import_events(s, events, name, bool(body.get("append")))
                 parsers.align_marks(s["marks"], imported)
-                s["imports"].append({"at": now()[0], "file": name, "members": members, "meta": meta,
+                s["imports"].append({"at": now()[0], "file": name, "upload_id": uid, "members": members, "meta": meta,
                                      "events": len(imported)})
                 save(s)
             ensure_judge(sid)

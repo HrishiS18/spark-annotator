@@ -31,7 +31,8 @@ const assert = require('node:assert/strict');
     if (process.env.SPARK_LIVE_VOICE_SPEECH === '1') {
       const aiff = path.join(data, 'synthetic-prompt.aiff');
       speechFile = path.join(data, 'synthetic-prompt.wav');
-      execFileSync('/usr/bin/say', ['-o', aiff, 'What is this task about? Please answer in one short sentence.']);
+      const spokenPrompt = process.env.SPARK_LIVE_VOICE_PROMPT || 'What is this task about? Please answer in one short sentence.';
+      execFileSync('/usr/bin/say', ['-o', aiff, spokenPrompt]);
       execFileSync('/usr/bin/afconvert', ['-f', 'WAVE', '-d', 'LEI16', aiff, speechFile]);
     }
     let ready = false;
@@ -97,6 +98,13 @@ const assert = require('node:assert/strict');
         await new Promise(resolve => setTimeout(resolve, 500));
       }
       assert(roundTrip, 'Native voice did not produce both user and assistant transcript segments.');
+      if (process.env.SPARK_LIVE_VOICE_EXPECT) {
+        const session = await (await fetch(`${base}/api/sessions/${sid}`)).json();
+        const spoken = session.events.filter(event => event.role === 'assistant' && event.meta?.voice)
+          .map(event => event.text).join(' ').toLowerCase();
+        assert(spoken.includes(process.env.SPARK_LIVE_VOICE_EXPECT.toLowerCase()),
+          `Voice did not mention ${process.env.SPARK_LIVE_VOICE_EXPECT}: ${spoken}`);
+      }
     }
     await page.locator('#voice-end').click();
     await page.waitForFunction(() => document.querySelector('#voice-status')?.textContent === 'Ready');
