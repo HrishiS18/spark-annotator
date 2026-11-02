@@ -228,10 +228,14 @@ const assert = require('node:assert/strict');
     await page.reload();
     assert.equal((await (await fetch(`${base}/api/sessions/${sid}?view=researcher`)).json()).analysis_runs.length,1);
     await page.screenshot({ path:path.join(data,'spark-review.png'),fullPage:true });
+    // Guided review: moments, then highlights, where the lock button lives.
+    assert.equal(await page.locator('#rv').getAttribute('data-step'), 'moments');
+    await page.locator('#step-actions [data-go=highlights]').click();
     await page.locator('#finish').click();
     console.log('QA: independent pass submitted');
     await page.waitForFunction(() => document.querySelector('#finish')?.textContent === 'Finish and return home');
-    assert((await page.locator('#review-next').textContent()).includes('Suggested moments below are optional'));
+    assert.equal(await page.locator('#rv').getAttribute('data-step'), 'suggestions');
+    assert((await page.locator('#todo').textContent()).includes('suggested moments'));
     assert.equal(await page.locator('.flag-card.open').count(), 0);
     assert.equal(await page.locator('.flag-card.read-only').count(), 2);
     await page.screenshot({path:path.join(data,'review-after-independent.png'),fullPage:true});

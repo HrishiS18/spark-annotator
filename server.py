@@ -31,6 +31,7 @@ import transcript
 import storage
 import annotations
 import judge_validation
+import voice_measures
 from codex_runtime import RuntimeUnavailable
 from agent_runtime import RuntimeManager, AGENT_KINDS
 
@@ -145,7 +146,7 @@ def create_session(body, allow_legacy=False):
         "external": bool(study.get("external")),
         "phase_order": order, "phase": order[0],
         "phases": {p: {"minutes": study["phases"].get(p)} for p in order},
-        "writing": {}, "events": [], "marks": [], "highlights": [], "candidates": [],
+        "writing": {}, "events": [], "marks": [], "highlights": [], "voice_samples": [], "candidates": [],
         "detection": None, "trace": None, "codes": {}, "imports": [],
         "recording": None, "parse_turns": [],
         "schema_version": 2, "analysis_runs": [],
@@ -160,6 +161,7 @@ def create_session(body, allow_legacy=False):
     s["config_snapshot"] = {"study": copy.deepcopy(study), "task": copy.deepcopy(s["prompt"]),
                             "persona": copy.deepcopy(PERSONAS[persona]), "taxonomy": copy.deepcopy(TAXONOMY),
                             "annotation": annotations.settings_for_study(study),
+                            "voice_measures": voice_measures.settings_for_study(study),
                             "agent_instructions": (study.get("agent_instructions") or "").replace("{task}", s["prompt"]["text"]) or None,
                             "runtime": copy.deepcopy(s["runtime"])}
     s["phases"][order[0]]["started_at"] = iso
@@ -483,6 +485,34 @@ def marks_csv():
     return buf.getvalue()
 
 
+def voice_csv():
+    """One row per participant turn in voice sessions: timing, acoustics, and
+    each value relative to that participant's own typical turn."""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    acoustic = ["samples", "speech_s", "voiced_s", "pitch_hz", "pitch_range_st", "pitch_end_slope_st", "loudness_db",
+                "loudness_peak_db", "pause_count", "longest_pause_s", "syllable_rate", "overlap_s", "remote_gap_s",
+                "started_during_remote", "auto_gain_control"]
+    w.writerow(["session_id", "participant_id", "study", "prompt_id", "persona", "condition", "turn", "event_ids",
+                "start_ms", "end_ms", "gap_s", "gap_source", "transcript_gap_s", "duration_s", "words", "wpm", "fillers",
+                "filler_rate", "change_tokens", "agent_backchannels", "overlap"] + acoustic +
+               ["rel_gap_s", "rel_pitch_st", "rel_loudness_db", "rel_rate_pct", "pace_unit", "flags", "score", "text"])
+    for s in all_sessions():
+        if s.get("interaction_mode") != "voice":
+            continue
+        p = voice_measures.profile(s, get_store().realtime_feed(s["id"]))
+        for r in p["turns"]:
+            a, rel = r["acoustic"] or {}, r["relative"]
+            w.writerow([s["id"], s["participant_id"], s["study"], s["prompt"]["id"], s["persona"], s["condition"],
+                        r["index"], "|".join(r["event_ids"]), r["start_ms"], r["end_ms"], r["gap_s"], p["gap_source"],
+                        r["transcript_gap_s"], r["duration_s"], r["words"], r["wpm"], r["fillers"], r["filler_rate"],
+                        "|".join(r["change_tokens"]), r["agent_backchannels"], r["overlap"]] + [a.get(k) for k in acoustic] +
+                       [rel.get("gap_s"), rel.get("pitch_st"), rel.get("loudness_db"), rel.get("rate_pct"), p["pace_unit"],
+                        "|".join(f["key"] + (f"={f['value']}" if f["value"] is not None else "") for f in r["flags"]),
+                        r["score"], _quick(r["text"])])
+    return buf.getvalue()
+
+
 def candidates_csv():
     buf = io.StringIO()
     w = csv.writer(buf)
@@ -743,6 +773,9 @@ class Handler(BaseHTTPRequestHandler):
                 "runtime": get_runtime().status(),
                 "runtimes": get_runtime().statuses() if hasattr(get_runtime(),"statuses") else {"codex":get_runtime().status()},
                 "judge": {**judge.status(), "automatic": auto_judge_enabled()},
+                "voice_measures": {key: {"acoustic": cfg["enabled"] and cfg["acoustic"]["enabled"],
+                                         "setup_notice": cfg["wording"]["setup_notice"]}
+                                   for key, cfg in ((k, voice_measures.settings_for_study(st)) for k, st in STUDIES.items())},
             })
         if api == ["sessions"]:
             if method == "GET":
@@ -770,6 +803,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, marks_csv(), "text/csv", {"Content-Disposition": "attachment; filename=marks.csv"})
             if api[1:] == ["highlights.csv"]:
                 return self._send(200, highlights_csv(), "text/csv", {"Content-Disposition": "attachment; filename=highlights.csv"})
+            if api[1:] == ["voice.csv"]:
+                return self._send(200, voice_csv(), "text/csv", {"Content-Disposition": "attachment; filename=voice.csv"})
             if api[1:] == ["candidates.csv"]:
                 return self._send(200, candidates_csv(), "text/csv", {"Content-Disposition": "attachment; filename=candidates.csv"})
 
@@ -855,6 +890,9 @@ class Handler(BaseHTTPRequestHandler):
             s = load(sid)
             s["analysis"] = analysis(s)
             s["annotation_settings"] = annotations.settings(s)
+            s["voice_settings"] = voice_measures.settings(s)
+            # Raw browser samples are research data; the review reads the profile.
+            s["voice_sample_count"] = len(s.pop("voice_samples", []))
             if (query.get("view") or [""])[0] != "researcher" and not s.get("independent_review"):
                 s["candidates"] = []
                 s["judge"] = {"status": (s.get("judge") or {}).get("status", "not_run")}
@@ -1049,6 +1087,26 @@ class Handler(BaseHTTPRequestHandler):
                 save(s)
             return self._send(200, h)
 
+        if method == "POST" and rest == ["voice-samples"]:
+            with LOCK:
+                s = load(sid)
+                added = voice_measures.add_samples(s, body, voice_measures.settings(s))
+                if added:
+                    save(s)
+            return self._send(200, {"added": [v["id"] for v in added]})
+
+        if method == "GET" and rest == ["voice-profile"]:
+            s = load(sid)
+            cfg = voice_measures.settings(s)
+            shown = s.get("voice_profile_shown")
+            if (query.get("view") or [""])[0] != "researcher":
+                if not voice_measures.visible_to_participant(s, cfg):
+                    return self._send(200, {"visible": False})
+                if shown:
+                    return self._send(200, {"visible": True, "shown_at": shown["at"], **shown["profile"]})
+            return self._send(200, {"visible": True, "shown_at": (shown or {}).get("at"),
+                                    **voice_measures.profile(s, get_store().realtime_feed(sid), cfg)})
+
         if method == "GET" and rest == ["tag-suggestions"]:
             s = load(sid)
             return self._send(200, annotations.tag_suggestions(all_sessions(), s))
@@ -1057,6 +1115,12 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 s = load(sid)
                 snapshot = annotations.complete_independent_review(s)
+                cfg = voice_measures.settings(s)
+                if voice_measures.visible_to_participant(s, cfg):
+                    # The voice data is final once the conversation ends, so this is
+                    # exactly what the participant is shown, kept even if settings change.
+                    s["voice_profile_shown"] = {"at": now()[0], "settings": cfg,
+                                                "profile": voice_measures.profile(s, get_store().realtime_feed(sid), cfg)}
                 save(s)
             return self._send(200, snapshot)
 

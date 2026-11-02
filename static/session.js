@@ -311,7 +311,7 @@ async function startVoice() {
     if (voiceClient !== client) return;
     voiceLocalStatus = state === "active" || state === "inactive" ? null : state;
     renderVoice();
-  });
+  }, S.voice_settings);
   voiceClient = client;
   renderVoice();
   try {

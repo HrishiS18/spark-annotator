@@ -7,13 +7,15 @@
 <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-<div class="rv">
+<div class="rv" id="rv">
   <header class="rv-top">
     <span class="side-brand" id="brand"></span>
     <span class="topbar-title" id="title"></span>
     <span class="tag" id="meta"></span>
     <div class="topbar-right" id="actions"></div>
   </header>
+  <nav class="rv-steps hidden" id="steps" aria-label="Review steps"></nav>
+  <div class="rv-todo hidden" id="todo" role="status"></div>
   <div class="rv-body">
     <section class="rv-left">
       <div class="player" id="player"></div>
@@ -27,14 +29,20 @@
         <label class="small muted"><input type="checkbox" id="show-tools"> show tool calls</label>
         <label class="small muted"><input type="checkbox" id="follow" checked> follow video</label>
       </div>
+      <p class="small muted rv-select-hint hidden" id="select-hint"></p>
       <div class="rv-transcript" id="transcript"></div>
     </section>
     <aside class="rv-right">
       <div id="review-next"></div>
-      <div id="intro"></div>
-      <div id="flags"></div>
-      <div id="highlights" class="hl-panel"></div>
-      <div id="suggestions"></div>
+      <div class="rv-step" data-step-panel="moments">
+        <div id="intro"></div>
+        <div id="moment-nav" class="moment-nav"></div>
+        <div id="flags"></div>
+      </div>
+      <div class="rv-step" data-step-panel="highlights"><div id="highlights" class="hl-panel"></div></div>
+      <div class="rv-step" data-step-panel="suggestions"><div id="suggestions"></div></div>
+      <div class="rv-step" data-step-panel="voice"><div id="voice" class="voice-panel"></div></div>
+      <div id="step-actions" class="step-actions"></div>
     </aside>
   </div>
 </div>

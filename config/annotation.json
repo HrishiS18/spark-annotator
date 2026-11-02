@@ -1,5 +1,5 @@
 {
-  "_comment": "Open-ended highlight annotation. These are defaults; a study in studies.json can override any key under an \"annotation\" object. Each new session snapshots the merged settings, so later edits here never change how an existing session validates or displays. Highlights record exact character spans (code points) of transcript text, tool output, or the participant's written answers, each with an optional note and free tags. Spans are the stable unit; any category scheme is applied later and can change without re-annotation.",
+  "_comment": "Open-ended highlight annotation. These are defaults; a study in studies.json can override any key under an \"annotation\" object. Each new session snapshots the merged settings, so later edits here never change how an existing session validates or displays. Highlights record exact character spans (code points) of transcript text, tool output, or the participant's written answers, each with an optional note and free tags. Spans are the stable unit; any category scheme is applied later and can change without re-annotation. \"review_steps\" turns the participant review into guided steps (moments, highlights, suggestions, how you spoke) with one moment shown at a time; it changes layout only, never what is collected. Set its \"enabled\" to false for the single-page review. The researcher view always uses the single page.",
   "highlights": {
     "enabled": true,
     "standalone": true,
@@ -13,9 +13,21 @@
     "candidate_highlights": true,
     "note_autosave_ms": 700,
     "targets": {
-      "event_roles": ["user", "assistant", "partner", "tool_call", "tool_result"],
-      "event_fields": ["text", "output"],
-      "writing": ["pre", "post"]
+      "event_roles": [
+        "user",
+        "assistant",
+        "partner",
+        "tool_call",
+        "tool_result"
+      ],
+      "event_fields": [
+        "text",
+        "output"
+      ],
+      "writing": [
+        "pre",
+        "post"
+      ]
     }
   },
   "wording": {
@@ -37,9 +49,49 @@
     "adjust_hint": "Select the new text on the left, then choose \"Use as new boundaries\".",
     "remove_button": "Remove",
     "writing_title": "Your written answers",
-    "writing_labels": {"pre": "Before the conversation", "post": "After the conversation"},
+    "writing_labels": {
+      "pre": "Before the conversation",
+      "post": "After the conversation"
+    },
     "candidate_label": "Suggested passage",
     "moment_label": "Moment",
     "output_label": "output"
+  },
+  "review_steps": {
+    "enabled": true,
+    "wording": {
+      "steps": {
+        "moments": {
+          "label": "Your moments",
+          "todo": "Look at each moment you marked and say whether it changed your thinking. Nothing here is graded."
+        },
+        "highlights": {
+          "label": "Highlights",
+          "todo": "Optional: select any words in the conversation or your answers that stood out. When you're done, lock your answers."
+        },
+        "suggestions": {
+          "label": "Suggestions",
+          "todo": "Optional: say whether the AI's suggested moments match anything you noticed. Your own answers are already locked."
+        },
+        "voice": {
+          "label": "How you spoke",
+          "todo": "Have a look at how you spoke compared with your usual, then finish.",
+          "locked": "This appears after you lock your answers in Highlights."
+        }
+      },
+      "all_confirmed": "All your moments are confirmed. Next, look for anything else that stood out.",
+      "view_only": "Your answers are locked. You can look back at them but not change them.",
+      "done": "Your answers are saved. Thank you for taking part.",
+      "moment_of": "Moment {i} of {n}",
+      "no_moments": "You didn't mark any moments. You can add one you remember below.",
+      "previous": "Previous",
+      "next": "Next",
+      "back": "Back",
+      "next_step": "Next: {label}",
+      "lock": "I'm done, lock my answers",
+      "finish": "Finish and return home",
+      "answers_title": "Your answers before and after",
+      "select_hint": "Select any words to highlight them"
+    }
   }
 }
